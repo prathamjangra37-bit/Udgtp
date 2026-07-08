@@ -121,6 +121,11 @@ app.post("/api/chat", async (req, res) => {
 
     const systemInstruction = `तुम्हारा नाम 'UDGTP' है। तुम एक अत्यंत बुद्धिमान, संस्कारी, रचनात्मक और बहुमुखी AI असिस्टेंट (Intelligent and Multimodal AI Assistant) हो।
 
+डेवलपर की पहचान (Developer/Creator Identity Rules):
+1. यदि कोई यूजर तुमसे पूछता है कि तुम्हें (UDGTP को) किसने बनाया है, तुम्हारा निर्माता या डेवलपर कौन है (जैसे: "Who created you?", "Who made you?", "Who is your developer?", "Kisne banaya?", "Developer kaun hai?", "तुम्हारा निर्माता कौन है?", या इनसे मिलता-जुलता कोई भी सवाल), तो तुम्हें हमेशा और केवल यही जवाब देना है: "I was developed by Pratham Jangra."
+2. ध्यान रहे कि यह नियम केवल तुम पर (UDGTP ऐप/असिस्टेंट) ही लागू होता है।
+3. अन्य सभी बाहरी तथ्यात्मक सवालों (जैसे "Who created ChatGPT?", "Who created Google?", "Who created Python?", "Who created India?" आदि) के लिए, तुम्हें पूरी सच्चाई और ईमानदारी से सही और वास्तविक जवाब देना है, और किसी भी गलत या झूठे निर्माता का दावा नहीं करना है।
+
 तुम्हारा लक्ष्य (Your Goal):
 यूज़र की हर संभव तरीके से पूरी श्रद्धा और आदर के साथ मदद करना। तुम लॉजिकल रीजनिंग (Logical Reasoning), प्रॉब्लम सॉल्विंग (Problem Solving), क्रिएटिव थिंकिंग (Creative Thinking) और इमेज एनालिसिस (Image Analysis/OCR) में बेहद माहिर हो।
 
@@ -238,25 +243,9 @@ app.post("/api/register-media", (req, res) => {
 app.get("/api/media/:id", (req, res) => {
   const media = mediaCache.get(req.params.id);
   if (!media) {
-    return res.status(404).send(`
-      <html>
-        <head>
-          <title>File Not Found - UDGTP</title>
-          <style>
-            body { background: #09090b; color: #f4f4f5; font-family: system-ui, sans-serif; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
-            .card { text-align: center; padding: 2.5rem; border: 1px solid #27272a; background: #0d0d0f; border-radius: 16px; max-width: 400px; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
-            h2 { color: #f43f5e; margin-top: 0; }
-            p { color: #a1a1aa; font-size: 14px; line-height: 1.5; }
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <h2>File Expired or Not Found</h2>
-            <p>The requested media may have expired because the server restarted, or the URL link is invalid. Please generate a new image/file in your chat session!</p>
-          </div>
-        </body>
-      </html>
-    `);
+    return res.status(404).json({
+      error: "File Expired or Not Found. The requested media may have expired because the server restarted, or the URL link is invalid. Please generate a new image/file in your chat session!"
+    });
   }
 
   try {
@@ -273,9 +262,9 @@ app.get("/api/media/:id", (req, res) => {
       // If it's already an HTTP url, redirect to it safely
       return res.redirect(media.data);
     }
-  } catch (error) {
+  } catch (error: any) {
     console.error("Serve Media Error:", error);
-    res.status(500).send("Error serving media file");
+    res.status(500).json({ error: error.message || "Error serving media file" });
   }
 });
 
@@ -320,4 +309,8 @@ async function setupApp() {
   });
 }
 
-setupApp();
+if (!process.env.VERCEL) {
+  setupApp();
+}
+
+export default app;
