@@ -36,17 +36,62 @@ import {
   Download,
   Wifi,
   WifiOff,
-  HelpCircle
+  HelpCircle,
+  Mail,
+  Calendar
 } from "lucide-react";
 import { SUGGESTIONS, PRINCIPLES } from "./data";
 import { Message, Conversation, Attachment } from "./types";
 import { MarkdownView } from "./components/MarkdownView";
 import { TypewriterView } from "./components/TypewriterView";
 import { motion, AnimatePresence } from "motion/react";
+import { initAuth, googleSignIn, logout } from "./lib/firebaseAuth";
+import { 
+  listCalendarEvents, 
+  createCalendarEvent, 
+  deleteCalendarEvent, 
+  listGmailMessages, 
+  sendGmailEmail, 
+  deleteGmailMessage,
+  fetchGmailMessage
+} from "./lib/workspaceService";
 
 export default function App() {
-  // Navigation / Tabs: "chat" | "profile" | "settings" | "help"
-  const [activeTab, setActiveTab] = useState<"chat" | "profile" | "settings" | "help">("chat");
+  // Navigation / Tabs: "chat" | "calendar" | "gmail" | "profile" | "settings" | "help"
+  const [activeTab, setActiveTab] = useState<"chat" | "calendar" | "gmail" | "profile" | "settings" | "help">("chat");
+
+  // Google Workspace Integration States
+  const [workspaceToken, setWorkspaceToken] = useState<string | null>(null);
+  const [workspaceUser, setWorkspaceUser] = useState<any | null>(null);
+  const [workspaceAuthNeedsClick, setWorkspaceAuthNeedsClick] = useState<boolean>(false);
+  const [workspaceAuthLoading, setWorkspaceAuthLoading] = useState<boolean>(false);
+  
+  // Calendar States
+  const [calendarEvents, setCalendarEvents] = useState<any[]>([]);
+  const [calendarLoading, setCalendarLoading] = useState<boolean>(false);
+  const [calendarError, setCalendarError] = useState<string | null>(null);
+  
+  // Calendar scheduling form states
+  const [newEventTitle, setNewEventTitle] = useState("");
+  const [newEventDate, setNewEventDate] = useState("");
+  const [newEventStartTime, setNewEventStartTime] = useState("");
+  const [newEventEndTime, setNewEventEndTime] = useState("");
+  const [newEventDesc, setNewEventDesc] = useState("");
+  const [newEventLocation, setNewEventLocation] = useState("");
+  const [isSchedulingEvent, setIsSchedulingEvent] = useState(false);
+
+  // Gmail States
+  const [gmailEmails, setGmailEmails] = useState<any[]>([]);
+  const [gmailLoading, setGmailLoading] = useState<boolean>(false);
+  const [gmailError, setGmailError] = useState<string | null>(null);
+  const [gmailQuery, setGmailQuery] = useState("");
+  
+  // Gmail modal / details states
+  const [selectedEmail, setSelectedEmail] = useState<any | null>(null);
+  const [isComposingEmail, setIsComposingEmail] = useState(false);
+  const [composeTo, setComposeTo] = useState("");
+  const [composeSubject, setComposeSubject] = useState("");
+  const [composeBody, setComposeBody] = useState("");
 
   // Multi-session State
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -102,6 +147,199 @@ export default function App() {
   // References
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Initialize Workspace Authentication
+  useEffect(() => {
+    const unsubscribe = initAuth(
+      (user, token) => {
+        setWorkspaceToken(token);
+        setWorkspaceUser(user);
+        setWorkspaceAuthNeedsClick(false);
+        if (user.displayName) setUserName(user.displayName);
+        if (user.email) setUserEmail(user.email);
+      },
+      () => {
+        setWorkspaceToken(null);
+        setWorkspaceUser(null);
+        setWorkspaceAuthNeedsClick(true);
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  // Auto-fetch data based on activeTab
+  useEffect(() => {
+    if (!workspaceToken) return;
+
+    if (activeTab === "calendar") {
+      fetchUpcomingEvents();
+    } else if (activeTab === "gmail") {
+      fetchRecentEmails();
+    }
+  }, [activeTab, workspaceToken]);
+
+  const fetchUpcomingEvents = async () => {
+    if (!workspaceToken) return;
+    setCalendarLoading(true);
+    setCalendarError(null);
+    try {
+      const events = await listCalendarEvents(workspaceToken);
+      setCalendarEvents(events);
+    } catch (err: any) {
+      console.error("Fetch calendar events failed:", err);
+      setCalendarError(err.message || "Failed to load calendar events.");
+    } finally {
+      setCalendarLoading(false);
+    }
+  };
+
+  const fetchRecentEmails = async (searchQ = gmailQuery) => {
+    if (!workspaceToken) return;
+    setGmailLoading(true);
+    setGmailError(null);
+    try {
+      const messages = await listGmailMessages(workspaceToken, 15, searchQ);
+      setGmailEmails(messages);
+    } catch (err: any) {
+      console.error("Fetch Gmail messages failed:", err);
+      setGmailError(err.message || "Failed to load emails.");
+    } finally {
+      setGmailLoading(false);
+    }
+  };
+
+  const handleCreateEvent = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!workspaceToken) return;
+    if (!newEventTitle || !newEventDate || !newEventStartTime || !newEventEndTime) {
+      handleShowNotification("Kripya saare required fields bharein (Please fill all fields).");
+      return;
+    }
+
+    const confirmed = window.confirm(`Are you sure you want to schedule "${newEventTitle}" in your Google Calendar?`);
+    if (!confirmed) return;
+
+    try {
+      const startIso = `${newEventDate}T${newEventStartTime}:00`;
+      const endIso = `${newEventDate}T${newEventEndTime}:00`;
+
+      await createCalendarEvent(workspaceToken, {
+        summary: newEventTitle,
+        description: newEventDesc,
+        location: newEventLocation,
+        start: { dateTime: new Date(startIso).toISOString() },
+        end: { dateTime: new Date(endIso).toISOString() },
+      });
+
+      handleShowNotification("Event scheduled in Google Calendar successfully!");
+      setNewEventTitle("");
+      setNewEventDate("");
+      setNewEventStartTime("");
+      setNewEventEndTime("");
+      setNewEventDesc("");
+      setNewEventLocation("");
+      setIsSchedulingEvent(false);
+      fetchUpcomingEvents();
+    } catch (err: any) {
+      console.error("Create event failed:", err);
+      handleShowNotification(`Failed to create event: ${err.message}`);
+    }
+  };
+
+  const handleDeleteEvent = async (eventId: string, summary: string) => {
+    if (!workspaceToken) return;
+    const confirmed = window.confirm(`Are you sure you want to delete "${summary}" from your Google Calendar?`);
+    if (!confirmed) return;
+
+    try {
+      await deleteCalendarEvent(workspaceToken, eventId);
+      handleShowNotification("Event deleted successfully.");
+      fetchUpcomingEvents();
+    } catch (err: any) {
+      console.error("Delete event failed:", err);
+      handleShowNotification(`Failed to delete event: ${err.message}`);
+    }
+  };
+
+  const handleSendEmail = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!workspaceToken) return;
+    if (!composeTo || !composeSubject || !composeBody) {
+      handleShowNotification("Kripya saare fields bharein (Please fill all fields).");
+      return;
+    }
+
+    const confirmed = window.confirm(`Are you sure you want to send this email to ${composeTo}?`);
+    if (!confirmed) return;
+
+    try {
+      await sendGmailEmail(workspaceToken, composeTo, composeSubject, composeBody);
+      handleShowNotification("Email sent successfully!");
+      setComposeTo("");
+      setComposeSubject("");
+      setComposeBody("");
+      setIsComposingEmail(false);
+      fetchRecentEmails();
+    } catch (err: any) {
+      console.error("Send email failed:", err);
+      handleShowNotification(`Failed to send email: ${err.message}`);
+    }
+  };
+
+  const handleDeleteEmail = async (messageId: string, subject: string) => {
+    if (!workspaceToken) return;
+    const confirmed = window.confirm(`Are you sure you want to move "${subject}" to Trash?`);
+    if (!confirmed) return;
+
+    try {
+      await deleteGmailMessage(workspaceToken, messageId);
+      handleShowNotification("Email moved to Trash.");
+      if (selectedEmail?.id === messageId) {
+        setSelectedEmail(null);
+      }
+      fetchRecentEmails();
+    } catch (err: any) {
+      console.error("Trash email failed:", err);
+      handleShowNotification(`Failed to move email: ${err.message}`);
+    }
+  };
+
+  const handleWorkspaceLogin = async () => {
+    setWorkspaceAuthLoading(true);
+    try {
+      const result = await googleSignIn();
+      if (result) {
+        setWorkspaceToken(result.accessToken);
+        setWorkspaceUser(result.user);
+        setWorkspaceAuthNeedsClick(false);
+        if (result.user.displayName) setUserName(result.user.displayName);
+        if (result.user.email) setUserEmail(result.user.email);
+        handleShowNotification("Google Workspace connected successfully!");
+        if (activeTab === "calendar") {
+          fetchUpcomingEvents();
+        } else if (activeTab === "gmail") {
+          fetchRecentEmails();
+        }
+      }
+    } catch (err: any) {
+      console.error("Google login failed:", err);
+      handleShowNotification(`Connection failed: ${err.message || err}`);
+    } finally {
+      setWorkspaceAuthLoading(false);
+    }
+  };
+
+  const handleWorkspaceLogout = async () => {
+    try {
+      await logout();
+      setWorkspaceToken(null);
+      setWorkspaceUser(null);
+      setWorkspaceAuthNeedsClick(true);
+      handleShowNotification("Workspace disconnected successfully.");
+    } catch (err: any) {
+      console.error("Google logout failed:", err);
+    }
+  };
 
   // Load state from LocalStorage on mount
   useEffect(() => {
@@ -703,6 +941,45 @@ export default function App() {
         if (payload.length > 0) {
           const lastIndex = payload.length - 1;
           payload[lastIndex].content += ` [User Preference: Respond nicely keeping settings language in mind: ${language}]`;
+        }
+
+        // Dynamically inject real-time Google Workspace data if user asks about Gmail/Calendar
+        if (workspaceToken && payload.length > 0) {
+          const lastIndex = payload.length - 1;
+          const userQueryText = payload[lastIndex].content.toLowerCase();
+          let workspaceContext = "";
+
+          if (userQueryText.includes("email") || userQueryText.includes("gmail") || userQueryText.includes("mail") || userQueryText.includes("inbox") || userQueryText.includes("ख़त") || userQueryText.includes("मेल")) {
+            try {
+              const emails = await listGmailMessages(workspaceToken, 5);
+              if (emails && emails.length > 0) {
+                workspaceContext += `\n\n[Google Workspace Context - Recent Emails]:\n` + 
+                  emails.map((e, idx) => `${idx + 1}. From: ${e.from}\n   Subject: ${e.subject}\n   Date: ${e.date}\n   Snippet: ${e.snippet}`).join("\n---\n");
+              } else {
+                workspaceContext += `\n\n[Google Workspace Context]: No recent emails found.`;
+              }
+            } catch (err) {
+              console.warn("Failed to inject email context in chat:", err);
+            }
+          }
+
+          if (userQueryText.includes("calendar") || userQueryText.includes("meeting") || userQueryText.includes("event") || userQueryText.includes("schedule") || userQueryText.includes("appoint") || userQueryText.includes("कैलेण्डर") || userQueryText.includes("मीटिंग")) {
+            try {
+              const events = await listCalendarEvents(workspaceToken, 5);
+              if (events && events.length > 0) {
+                workspaceContext += `\n\n[Google Workspace Context - Upcoming Calendar Events]:\n` + 
+                  events.map((ev, idx) => `${idx + 1}. Event: ${ev.summary}\n   Start: ${ev.start.dateTime || ev.start.date}\n   End: ${ev.end.dateTime || ev.end.date}\n   Description: ${ev.description || "N/A"}\n   Location: ${ev.location || "N/A"}`).join("\n---\n");
+              } else {
+                workspaceContext += `\n\n[Google Workspace Context]: No upcoming calendar events found.`;
+              }
+            } catch (err) {
+              console.warn("Failed to inject calendar context in chat:", err);
+            }
+          }
+
+          if (workspaceContext) {
+            payload[lastIndex].content += `\n\nSystem Notice: The user has authorized Google Workspace integration in JX AI. Here is their real-time live Google Workspace data related to their query. Use this data directly to respond to the user's questions accurately, professionally, and helpful, while keeping JX AI's custom persona, language guidelines, and Haryanvi-flavored or professional friendly tone intact:\n${workspaceContext}`;
+          }
         }
 
         // Pre-insert an empty model message so typewriter can display loader & stream instantly
@@ -1410,6 +1687,36 @@ export default function App() {
 
           <button
             onClick={() => {
+              setActiveTab("calendar");
+              setIsSidebarOpen(false);
+            }}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+              activeTab === "calendar"
+                ? "bg-zinc-800/80 text-white"
+                : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40"
+            }`}
+          >
+            <Calendar className="w-4 h-4" />
+            <span>Google Calendar</span>
+          </button>
+
+          <button
+            onClick={() => {
+              setActiveTab("gmail");
+              setIsSidebarOpen(false);
+            }}
+            className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold cursor-pointer transition-all ${
+              activeTab === "gmail"
+                ? "bg-zinc-800/80 text-white"
+                : "text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/40"
+            }`}
+          >
+            <Mail className="w-4 h-4" />
+            <span>Gmail Inbox</span>
+          </button>
+
+          <button
+            onClick={() => {
               setActiveTab("profile");
               setIsSidebarOpen(false);
             }}
@@ -1649,6 +1956,30 @@ export default function App() {
                 </button>
                 <button
                   onClick={() => {
+                    setActiveTab("calendar");
+                    setIsSidebarOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer ${
+                    activeTab === "calendar" ? "bg-zinc-800 text-white" : "text-zinc-400"
+                  }`}
+                >
+                  <Calendar className="w-4 h-4" />
+                  <span>Google Calendar</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setActiveTab("gmail");
+                    setIsSidebarOpen(false);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer ${
+                    activeTab === "gmail" ? "bg-zinc-800 text-white" : "text-zinc-400"
+                  }`}
+                >
+                  <Mail className="w-4 h-4" />
+                  <span>Gmail Inbox</span>
+                </button>
+                <button
+                  onClick={() => {
                     setActiveTab("profile");
                     setIsSidebarOpen(false);
                   }}
@@ -1708,6 +2039,8 @@ export default function App() {
               <span className={`w-2 h-2 rounded-full animate-pulse ${isOnline ? "bg-blue-500" : "bg-red-500"}`} />
               <h1 className="text-sm md:text-base font-bold tracking-tight">
                 {activeTab === "chat" && (activeConversation?.title || "AI Workspace")}
+                {activeTab === "calendar" && "Google Calendar Integration"}
+                {activeTab === "gmail" && "Gmail Inbox Workspace"}
                 {activeTab === "profile" && "Your Profile"}
                 {activeTab === "settings" && "General Settings"}
                 {activeTab === "help" && "Help & Documentation"}
@@ -2093,6 +2426,448 @@ export default function App() {
               </div>
             )}
 
+          </div>
+        )}
+
+        {/* GOOGLE WORKSPACE CONNECTION PENDING SCREEN */}
+        {(!workspaceToken) && (activeTab === "calendar" || activeTab === "gmail") && (
+          <div className="flex-1 overflow-y-auto px-4 py-8 md:px-8 max-w-3xl mx-auto w-full flex flex-col justify-center items-center">
+            <div className={`p-8 md:p-10 rounded-3xl border text-center space-y-6 max-w-md ${cardClass}`}>
+              <div className="w-16 h-16 mx-auto rounded-2xl bg-zinc-900 border border-zinc-800 flex items-center justify-center text-zinc-100 shadow-[0_0_15px_rgba(255,255,255,0.05)]">
+                {activeTab === "calendar" ? <Calendar className="w-8 h-8 text-blue-400" /> : <Mail className="w-8 h-8 text-indigo-400" />}
+              </div>
+              <div className="space-y-2">
+                <h2 className="text-xl font-bold tracking-tight">Connect your Google Account</h2>
+                <p className="text-xs text-zinc-500 leading-relaxed">
+                  To view and manage your Google Workspace (Gmail or Calendar) directly inside JX AI, please authorize access to your Google account.
+                </p>
+              </div>
+              <button
+                onClick={handleWorkspaceLogin}
+                disabled={workspaceAuthLoading}
+                className="w-full py-3 rounded-xl bg-zinc-100 hover:bg-zinc-200 text-zinc-900 text-xs font-bold font-sans transition-all duration-150 cursor-pointer shadow-md disabled:opacity-50"
+              >
+                {workspaceAuthLoading ? "Connecting..." : "Connect with Google"}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* VIEW: GOOGLE CALENDAR INTEGRATION */}
+        {activeTab === "calendar" && workspaceToken && (
+          <div className="flex-1 overflow-y-auto px-4 py-8 md:px-8 max-w-4xl mx-auto w-full space-y-6">
+            
+            {/* Calendar Header Card */}
+            <div className={`p-6 rounded-2xl border ${cardClass} flex flex-col md:flex-row justify-between items-start md:items-center gap-4`}>
+              <div className="space-y-1">
+                <h2 className="text-lg font-bold flex items-center gap-2">
+                  <Calendar className="w-5 h-5 text-blue-400" />
+                  Your Google Calendar
+                </h2>
+                <p className="text-xs text-zinc-500">
+                  Logged in as <span className="font-mono text-zinc-400">{userEmail}</span>. Manage your appointments and events.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setIsSchedulingEvent(true)}
+                  className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold transition-all cursor-pointer shadow-md active:scale-95"
+                >
+                  Schedule Event
+                </button>
+                <button
+                  onClick={handleWorkspaceLogout}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold transition-all cursor-pointer border border-zinc-700"
+                >
+                  Disconnect
+                </button>
+              </div>
+            </div>
+
+            {/* Scheduling Form Block */}
+            {isSchedulingEvent && (
+              <form onSubmit={handleCreateEvent} className={`p-6 rounded-2xl border ${cardClass} space-y-4 animate-fadeIn`}>
+                <h3 className="text-sm font-bold text-zinc-300 uppercase tracking-widest">
+                  Schedule New Event
+                </h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-zinc-400">Event Title*</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Project Sync meeting"
+                      value={newEventTitle}
+                      onChange={(e) => setNewEventTitle(e.target.value)}
+                      className={`w-full p-2.5 rounded-xl border text-xs ${inputBgClass}`}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-zinc-400">Date*</label>
+                    <input
+                      type="date"
+                      value={newEventDate}
+                      onChange={(e) => setNewEventDate(e.target.value)}
+                      className={`w-full p-2.5 rounded-xl border text-xs ${inputBgClass}`}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-zinc-400">Start Time*</label>
+                    <input
+                      type="time"
+                      value={newEventStartTime}
+                      onChange={(e) => setNewEventStartTime(e.target.value)}
+                      className={`w-full p-2.5 rounded-xl border text-xs ${inputBgClass}`}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-zinc-400">End Time*</label>
+                    <input
+                      type="time"
+                      value={newEventEndTime}
+                      onChange={(e) => setNewEventEndTime(e.target.value)}
+                      className={`w-full p-2.5 rounded-xl border text-xs ${inputBgClass}`}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1.5 md:col-span-2">
+                    <label className="text-xs font-semibold text-zinc-400">Location</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. Google Meet / Room 402"
+                      value={newEventLocation}
+                      onChange={(e) => setNewEventLocation(e.target.value)}
+                      className={`w-full p-2.5 rounded-xl border text-xs ${inputBgClass}`}
+                    />
+                  </div>
+                  <div className="space-y-1.5 md:col-span-2">
+                    <label className="text-xs font-semibold text-zinc-400">Description</label>
+                    <textarea
+                      placeholder="Enter event details here..."
+                      value={newEventDesc}
+                      onChange={(e) => setNewEventDesc(e.target.value)}
+                      rows={3}
+                      className={`w-full p-2.5 rounded-xl border text-xs ${inputBgClass}`}
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-2 justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsSchedulingEvent(false)}
+                    className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 hover:bg-zinc-700 text-xs font-bold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold shadow-md"
+                  >
+                    Confirm Schedule
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Events List */}
+            <div className="space-y-3">
+              <div className="flex justify-between items-center px-1">
+                <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">
+                  Upcoming Calendar Events
+                </h3>
+                <button
+                  onClick={fetchUpcomingEvents}
+                  className="text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors font-semibold"
+                >
+                  Refresh Events
+                </button>
+              </div>
+
+              {calendarLoading ? (
+                <div className="py-12 text-center text-zinc-500 text-xs flex flex-col items-center gap-2">
+                  <span className="w-5 h-5 rounded-full border-2 border-t-blue-500 animate-spin" />
+                  Fetching events from Google Calendar...
+                </div>
+              ) : calendarError ? (
+                <div className="p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 text-xs">
+                  {calendarError}
+                </div>
+              ) : calendarEvents.length === 0 ? (
+                <div className={`p-8 rounded-2xl border text-center text-zinc-500 text-xs ${cardClass}`}>
+                  No upcoming events found in your Google Calendar.
+                </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {calendarEvents.map((ev) => {
+                    const startStr = ev.start.dateTime || ev.start.date;
+                    const endStr = ev.end.dateTime || ev.end.date;
+                    const startDateObj = new Date(startStr);
+                    const formattedDate = startDateObj.toLocaleDateString("en-US", {
+                      weekday: 'short', month: 'short', day: 'numeric', year: 'numeric'
+                    });
+                    const formattedTime = ev.start.dateTime 
+                      ? `${startDateObj.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})} - ${new Date(endStr).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}`
+                      : "All Day";
+
+                    return (
+                      <div key={ev.id} className={`p-4 rounded-2xl border ${cardClass} flex flex-col justify-between space-y-3 hover:border-zinc-700 transition-all`}>
+                        <div className="space-y-1.5">
+                          <div className="flex justify-between items-start gap-2">
+                            <h4 className="text-sm font-bold text-zinc-200">{ev.summary}</h4>
+                            <button
+                              onClick={() => handleDeleteEvent(ev.id, ev.summary)}
+                              className="p-1 rounded-lg hover:bg-red-500/10 text-zinc-500 hover:text-red-400 transition-colors cursor-pointer"
+                              title="Delete Event"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                          <p className="text-[11px] text-zinc-400 font-semibold flex items-center gap-1.5">
+                            <Clock className="w-3 h-3 text-blue-400" />
+                            {formattedDate} ({formattedTime})
+                          </p>
+                          {ev.location && (
+                            <p className="text-[11px] text-zinc-500 font-mono">
+                              📍 {ev.location}
+                            </p>
+                          )}
+                          {ev.description && (
+                            <p className="text-xs text-zinc-500 mt-1 line-clamp-3 bg-zinc-950/20 p-2 rounded-lg font-mono">
+                              {ev.description}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* VIEW: GMAIL INBOX WORKSPACE */}
+        {activeTab === "gmail" && workspaceToken && (
+          <div className="flex-1 overflow-y-auto px-4 py-8 md:px-8 max-w-5xl mx-auto w-full space-y-6">
+            
+            {/* Gmail Header Card */}
+            <div className={`p-6 rounded-2xl border ${cardClass} flex flex-col md:flex-row justify-between items-start md:items-center gap-4`}>
+              <div className="space-y-1">
+                <h2 className="text-lg font-bold flex items-center gap-2">
+                  <Mail className="w-5 h-5 text-indigo-400" />
+                  Your Gmail Inbox Workspace
+                </h2>
+                <p className="text-xs text-zinc-500">
+                  Logged in as <span className="font-mono text-zinc-400">{userEmail}</span>. Search, read, compose, and trash emails.
+                </p>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setIsComposingEmail(true)}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold transition-all cursor-pointer shadow-md active:scale-95"
+                >
+                  Compose Email
+                </button>
+                <button
+                  onClick={handleWorkspaceLogout}
+                  className="px-4 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-zinc-200 text-xs font-bold transition-all cursor-pointer border border-zinc-700"
+                >
+                  Disconnect
+                </button>
+              </div>
+            </div>
+
+            {/* Compose Modal Form */}
+            {isComposingEmail && (
+              <form onSubmit={handleSendEmail} className={`p-6 rounded-2xl border ${cardClass} space-y-4 animate-fadeIn`}>
+                <h3 className="text-sm font-bold text-zinc-300 uppercase tracking-widest">
+                  Compose New Email
+                </h3>
+                <div className="space-y-3">
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-zinc-400">To (Recipient Email)*</label>
+                    <input
+                      type="email"
+                      placeholder="recipient@example.com"
+                      value={composeTo}
+                      onChange={(e) => setComposeTo(e.target.value)}
+                      className={`w-full p-2.5 rounded-xl border text-xs ${inputBgClass}`}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-zinc-400">Subject*</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. JX AI Workspace Report"
+                      value={composeSubject}
+                      onChange={(e) => setComposeSubject(e.target.value)}
+                      className={`w-full p-2.5 rounded-xl border text-xs ${inputBgClass}`}
+                      required
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <label className="text-xs font-semibold text-zinc-400">Message Body*</label>
+                    <textarea
+                      placeholder="Type your email body here..."
+                      value={composeBody}
+                      onChange={(e) => setComposeBody(e.target.value)}
+                      rows={6}
+                      className={`w-full p-2.5 rounded-xl border text-xs ${inputBgClass}`}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="flex gap-2 justify-end pt-2">
+                  <button
+                    type="button"
+                    onClick={() => setIsComposingEmail(false)}
+                    className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-300 hover:bg-zinc-700 text-xs font-bold"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="submit"
+                    className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold shadow-md"
+                  >
+                    Send Email
+                  </button>
+                </div>
+              </form>
+            )}
+
+            {/* Search Bar Row */}
+            <div className="flex gap-2">
+              <input
+                type="text"
+                placeholder="Search emails in Gmail (e.g. from:me, subject:reports)..."
+                value={gmailQuery}
+                onChange={(e) => setGmailQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") fetchRecentEmails();
+                }}
+                className={`flex-1 p-2.5 rounded-xl border text-xs ${inputBgClass}`}
+              />
+              <button
+                onClick={() => fetchRecentEmails()}
+                className="px-4 py-2 rounded-xl bg-zinc-800 text-zinc-200 text-xs font-semibold border border-zinc-700 hover:bg-zinc-750"
+              >
+                Search
+              </button>
+            </div>
+
+            {/* Dual Pane Layout */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+              
+              {/* Emails List Column */}
+              <div className="lg:col-span-5 space-y-3">
+                <div className="flex justify-between items-center px-1">
+                  <h3 className="text-xs font-bold text-zinc-400 uppercase tracking-wider">
+                    Recent Messages
+                  </h3>
+                  <button
+                    onClick={() => fetchRecentEmails()}
+                    className="text-[11px] text-zinc-400 hover:text-zinc-200 transition-colors font-semibold"
+                  >
+                    Refresh List
+                  </button>
+                </div>
+
+                {gmailLoading ? (
+                  <div className="py-12 text-center text-zinc-500 text-xs flex flex-col items-center gap-2">
+                    <span className="w-5 h-5 rounded-full border-2 border-t-indigo-500 animate-spin" />
+                    Fetching Gmail inbox messages...
+                  </div>
+                ) : gmailError ? (
+                  <div className="p-4 rounded-xl border border-red-500/20 bg-red-500/5 text-red-400 text-xs">
+                    {gmailError}
+                  </div>
+                ) : gmailEmails.length === 0 ? (
+                  <div className={`p-8 rounded-2xl border text-center text-zinc-500 text-xs ${cardClass}`}>
+                    No messages found matching your search.
+                  </div>
+                ) : (
+                  <div className="space-y-2 max-h-[500px] overflow-y-auto pr-1">
+                    {gmailEmails.map((e) => {
+                      const isSelected = selectedEmail?.id === e.id;
+                      return (
+                        <div
+                          key={e.id}
+                          onClick={() => setSelectedEmail(e)}
+                          className={`p-3.5 rounded-xl border cursor-pointer text-left transition-all space-y-1 ${cardClass} ${
+                            isSelected 
+                              ? "border-indigo-500/80 bg-indigo-500/5" 
+                              : "hover:border-zinc-700"
+                          }`}
+                        >
+                          <div className="flex justify-between items-start gap-1">
+                            <span className="text-xs font-bold text-zinc-300 truncate max-w-[120px]">
+                              {e.from.split("<")[0].trim() || e.from}
+                            </span>
+                            <span className="text-[10px] text-zinc-500 font-mono shrink-0">
+                              {e.date}
+                            </span>
+                          </div>
+                          <h4 className="text-xs font-bold text-zinc-200 line-clamp-1">{e.subject || "(No Subject)"}</h4>
+                          <p className="text-[11px] text-zinc-500 line-clamp-2 leading-relaxed">{e.snippet}</p>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Email Detail Column */}
+              <div className="lg:col-span-7">
+                {selectedEmail ? (
+                  <div className={`p-6 rounded-2xl border ${cardClass} space-y-4`}>
+                    <div className="flex justify-between items-start gap-4 border-b pb-4 border-zinc-800/50">
+                      <div className="space-y-1">
+                        <h3 className="text-sm font-extrabold text-zinc-200">{selectedEmail.subject || "(No Subject)"}</h3>
+                        <p className="text-xs text-zinc-400">
+                          From: <span className="font-mono">{selectedEmail.from}</span>
+                        </p>
+                        <p className="text-[10px] text-zinc-500 font-mono">
+                          Date: {selectedEmail.date}
+                        </p>
+                      </div>
+                      <div className="flex gap-1">
+                        <button
+                          onClick={() => handleDeleteEmail(selectedEmail.id, selectedEmail.subject)}
+                          className="p-2 rounded-xl bg-red-500/10 text-red-400 hover:bg-red-500/20 transition-all cursor-pointer"
+                          title="Move to Trash"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => setSelectedEmail(null)}
+                          className="p-2 rounded-xl bg-zinc-800 text-zinc-300 hover:bg-zinc-750 text-xs font-bold"
+                        >
+                          Close
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="bg-zinc-950/40 p-4 rounded-xl max-h-[350px] overflow-y-auto whitespace-pre-wrap font-sans text-xs text-zinc-300 leading-relaxed border border-zinc-900">
+                      {selectedEmail.snippet}
+                      <p className="mt-4 text-[10px] text-zinc-500 border-t pt-3 border-zinc-800/40 font-mono">
+                        Note: Full email HTML parser and rendering is protected by secure sandbox environment. Use Gmail client for rich media.
+                      </p>
+                    </div>
+                  </div>
+                ) : (
+                  <div className={`p-12 rounded-2xl border border-dashed border-zinc-800 text-center text-zinc-500 text-xs flex flex-col justify-center items-center h-[350px] ${cardClass}`}>
+                    <Mail className="w-8 h-8 text-zinc-600 mb-2" />
+                    Select an email from the left list to view full content details, snippet, and manage.
+                  </div>
+                )}
+              </div>
+
+            </div>
           </div>
         )}
 
