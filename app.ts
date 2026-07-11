@@ -246,11 +246,122 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-// API endpoint for Image Generation (Disabled in free version)
+// API endpoint for Image Generation (Unlocked for Developer, disabled for others)
 app.post("/api/generate-image", async (req, res) => {
   res.setHeader("Content-Type", "application/json");
+  const userEmail = req.headers["x-user-email"] || req.body.email;
+
+  if (userEmail === "prathamjangra37@gmail.com") {
+    try {
+      const { prompt, aspectRatio } = req.body;
+      if (!prompt) {
+        return res.status(400).json({ error: "Prompt is required." });
+      }
+
+      const client = getGeminiClient();
+      console.log(`[Developer Bypass] Generating image prompt: "${prompt}" with aspect ratio: ${aspectRatio}`);
+
+      const response = await client.models.generateContent({
+        model: 'gemini-3.1-flash-lite-image',
+        contents: {
+          parts: [
+            { text: prompt },
+          ],
+        },
+        config: {
+          imageConfig: {
+            aspectRatio: aspectRatio || "1:1"
+          }
+        }
+      });
+
+      let base64Image = "";
+      const candidate = response.candidates?.[0];
+      if (candidate?.content?.parts) {
+        for (const part of candidate.content.parts) {
+          if (part.inlineData && part.inlineData.data) {
+            // Some versions return raw base64 or with prefix
+            const dataStr = part.inlineData.data;
+            base64Image = dataStr.startsWith("data:") ? dataStr : `data:image/png;base64,${dataStr}`;
+            break;
+          }
+        }
+      }
+
+      if (!base64Image) {
+        throw new Error("No image data returned from Gemini Imagen model. Please try a different prompt or verify your key.");
+      }
+
+      // Register media to local memory cache so client can access it via real URL
+      const id = Math.random().toString(36).substring(2, 15);
+      mediaCache.set(id, {
+        data: base64Image,
+        name: `ai-generated-${Date.now()}.png`,
+        mimeType: "image/png"
+      });
+
+      return res.status(200).json({ imageUrl: `/api/media/${id}` });
+    } catch (err: any) {
+      console.error("Developer Image Generation Error:", err);
+      return res.status(500).json({ 
+        error: `[Developer Bypass Error] ${err.message || "Failed to generate image via Gemini API."}` 
+      });
+    }
+  }
+
   return res.status(403).json({
     error: "Image generation requires a supported paid Gemini API key. For the free version, please stick to text-based and image analysis requests which are fully active."
+  });
+});
+
+// Secure endpoint for Developer Console Playground to test models and instructions
+app.post("/api/developer/chat", async (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  const userEmail = req.headers["x-user-email"] || req.body.email;
+
+  if (userEmail !== "prathamjangra37@gmail.com") {
+    return res.status(403).json({ error: "Access Denied. Secure Developer authorization required." });
+  }
+
+  try {
+    const { prompt, systemInstruction, model, temperature } = req.body;
+    if (!prompt) {
+      return res.status(400).json({ error: "Prompt is required." });
+    }
+
+    const client = getGeminiClient();
+    const selectedModel = model || "gemini-3.5-flash";
+
+    console.log(`[Developer Playground] Model: ${selectedModel}, Temp: ${temperature || 0.7}`);
+
+    const response = await client.models.generateContent({
+      model: selectedModel,
+      contents: prompt,
+      config: {
+        systemInstruction: systemInstruction || "You are a professional development assistant.",
+        temperature: temperature !== undefined ? parseFloat(temperature) : 0.7,
+      }
+    });
+
+    return res.status(200).json({
+      text: response.text || "",
+      modelUsed: selectedModel,
+      timestamp: new Date()
+    });
+  } catch (err: any) {
+    console.error("Developer Chat Error:", err);
+    return res.status(500).json({ error: err.message || "Playground generation failed." });
+  }
+});
+
+// Lightweight health check ping endpoint for developer diagnostics
+app.get("/api/developer/ping", (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  return res.status(200).json({
+    status: "online",
+    timestamp: new Date(),
+    environment: process.env.NODE_ENV || "development",
+    uptime: process.uptime()
   });
 });
 

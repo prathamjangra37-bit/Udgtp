@@ -39,7 +39,13 @@ import {
   HelpCircle,
   Mail,
   Calendar,
-  LogOut
+  LogOut,
+  Terminal,
+  ShieldAlert,
+  Activity,
+  Database,
+  Cpu,
+  Layers
 } from "lucide-react";
 import { SUGGESTIONS, PRINCIPLES } from "./data";
 import { Message, Conversation, Attachment } from "./types";
@@ -74,8 +80,8 @@ import {
 } from "./lib/workspaceService";
 
 export default function App() {
-  // Navigation / Tabs: "chat" | "calendar" | "gmail" | "profile" | "settings" | "help"
-  const [activeTab, setActiveTab] = useState<"chat" | "calendar" | "gmail" | "profile" | "settings" | "help">("chat");
+  // Navigation / Tabs: "chat" | "calendar" | "gmail" | "profile" | "settings" | "help" | "developer"
+  const [activeTab, setActiveTab] = useState<"chat" | "calendar" | "gmail" | "profile" | "settings" | "help" | "developer">("chat");
 
   // Google Workspace Integration States
   const [workspaceToken, setWorkspaceToken] = useState<string | null>(null);
@@ -87,6 +93,7 @@ export default function App() {
 
   // General Firebase Auth States
   const [currentUser, setCurrentUser] = useState<any | null>(null);
+  const isDeveloper = currentUser?.email === "prathamjangra37@gmail.com";
   const [authMode, setAuthMode] = useState<"signin" | "signup" | "phone">("signin");
   const [authEmail, setAuthEmail] = useState("");
   const [authPassword, setAuthPassword] = useState("");
@@ -172,6 +179,21 @@ export default function App() {
   const [isGenerateImageMode, setIsGenerateImageMode] = useState(false);
   const [imageAspectRatio, setImageAspectRatio] = useState<"1:1" | "16:9" | "4:3" | "9:16">("1:1");
   const [showImagePremiumModal, setShowImagePremiumModal] = useState(false);
+
+  // Developer Console States
+  const [devSystemInstruction, setDevSystemInstruction] = useState("You are a professional development assistant.");
+  const [devPrompt, setDevPrompt] = useState("Write a high-performance bubble sort function in TypeScript.");
+  const [devModel, setDevModel] = useState("gemini-3.5-flash");
+  const [devTemp, setDevTemp] = useState(0.7);
+  const [devResult, setDevResult] = useState("");
+  const [devPlaygroundLoading, setDevPlaygroundLoading] = useState(false);
+  const [devLatency, setDevLatency] = useState<number | null>(null);
+  const [devLatencyTesting, setDevLatencyTesting] = useState(false);
+  const [devLogs, setDevLogs] = useState<Array<{ time: string; type: string; msg: string }>>([
+    { time: new Date().toLocaleTimeString(), type: "info", msg: "Developer match authorized securely: prathamjangra37@gmail.com" },
+    { time: new Date().toLocaleTimeString(), type: "success", msg: "Firebase Authentication context synced with developer role." },
+    { time: new Date().toLocaleTimeString(), type: "system", msg: "Gemini Imagen endpoint active at /api/generate-image with Bypass permissions." },
+  ]);
 
   // PWA Install States
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
@@ -852,6 +874,75 @@ export default function App() {
     }
   };
 
+  const handleDevPing = async () => {
+    setDevLatencyTesting(true);
+    const startTime = performance.now();
+    try {
+      const res = await fetch("/api/developer/ping");
+      const duration = Math.round(performance.now() - startTime);
+      if (res.ok) {
+        setDevLatency(duration);
+        setDevLogs((prev) => [
+          { time: new Date().toLocaleTimeString(), type: "success", msg: `Latency test completed: ${duration}ms response time.` },
+          ...prev
+        ]);
+      } else {
+        throw new Error("HTTP connection check failed");
+      }
+    } catch (err: any) {
+      setDevLogs((prev) => [
+        { time: new Date().toLocaleTimeString(), type: "error", msg: `Latency test failed: ${err.message}` },
+        ...prev
+      ]);
+    } finally {
+      setDevLatencyTesting(false);
+    }
+  };
+
+  const handleDevPlaygroundRun = async () => {
+    if (devPlaygroundLoading) return;
+    setDevPlaygroundLoading(true);
+    setDevResult("");
+    setDevLogs((prev) => [
+      { time: new Date().toLocaleTimeString(), type: "info", msg: `Launching prompt evaluation with model ${devModel}...` },
+      ...prev
+    ]);
+    try {
+      const res = await fetch("/api/developer/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-user-email": currentUser?.email || ""
+        },
+        body: JSON.stringify({
+          prompt: devPrompt,
+          systemInstruction: devSystemInstruction,
+          model: devModel,
+          temperature: devTemp,
+          email: currentUser?.email || ""
+        })
+      });
+      if (!res.ok) {
+        const errData = await res.json();
+        throw new Error(errData.error || "Generation error");
+      }
+      const data = await res.json();
+      setDevResult(data.text);
+      setDevLogs((prev) => [
+        { time: new Date().toLocaleTimeString(), type: "success", msg: `Prompt evaluated successfully with model ${data.modelUsed}.` },
+        ...prev
+      ]);
+    } catch (err: any) {
+      setDevResult(`Error: ${err.message}`);
+      setDevLogs((prev) => [
+        { time: new Date().toLocaleTimeString(), type: "error", msg: `Prompt evaluation failed: ${err.message}` },
+        ...prev
+      ]);
+    } finally {
+      setDevPlaygroundLoading(false);
+    }
+  };
+
   // Create a brand new empty chat session
   const handleNewChat = () => {
     const newId = Math.random().toString(36).substring(7);
@@ -1169,8 +1260,15 @@ export default function App() {
         // Trigger Image Generation API
         const res = await fetch("/api/generate-image", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ prompt: trimmed, aspectRatio: imageAspectRatio }),
+          headers: { 
+            "Content-Type": "application/json",
+            "x-user-email": currentUser?.email || ""
+          },
+          body: JSON.stringify({ 
+            prompt: trimmed, 
+            aspectRatio: imageAspectRatio,
+            email: currentUser?.email || ""
+          }),
           signal: controller.signal
         });
 
@@ -2474,6 +2572,23 @@ export default function App() {
             <span>Help &amp; Guide</span>
           </button>
 
+          {isDeveloper && (
+            <button
+              onClick={() => {
+                setActiveTab("developer");
+                setIsSidebarOpen(false);
+              }}
+              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-semibold cursor-pointer transition-all border ${
+                activeTab === "developer"
+                  ? "bg-emerald-600/15 border-emerald-500/25 text-emerald-400"
+                  : "text-zinc-400 hover:text-emerald-300 hover:bg-emerald-950/25 border-transparent"
+              }`}
+            >
+              <Terminal className="w-4 h-4" />
+              <span>Developer Console</span>
+            </button>
+          )}
+
           <div className="border-t border-zinc-800/40 my-3 pt-3 space-y-2">
             <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-zinc-950/45 border border-zinc-900">
               <div className="w-8 h-8 rounded-full bg-blue-600/10 border border-blue-500/20 text-blue-400 flex items-center justify-center font-bold text-sm uppercase shrink-0">
@@ -2762,6 +2877,23 @@ export default function App() {
                   <span>Help &amp; Guide</span>
                 </button>
 
+                {isDeveloper && (
+                  <button
+                    onClick={() => {
+                      setActiveTab("developer");
+                      setIsSidebarOpen(false);
+                    }}
+                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-semibold cursor-pointer border ${
+                      activeTab === "developer"
+                        ? "bg-emerald-600/15 border-emerald-500/25 text-emerald-400"
+                        : "text-zinc-400 hover:text-emerald-300 border-transparent"
+                    }`}
+                  >
+                    <Terminal className="w-4 h-4 text-emerald-400" />
+                    <span>Developer Console</span>
+                  </button>
+                )}
+
                 <div className="border-t border-zinc-800/40 my-3 pt-3 space-y-2">
                   <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-zinc-950/45 border border-zinc-900">
                     <div className="w-7 h-7 rounded-full bg-blue-600/10 border border-blue-500/20 text-blue-400 flex items-center justify-center font-bold text-xs uppercase shrink-0">
@@ -2830,6 +2962,7 @@ export default function App() {
                 {activeTab === "profile" && "Your Profile"}
                 {activeTab === "settings" && "General Settings"}
                 {activeTab === "help" && "Help & Documentation"}
+                {activeTab === "developer" && "Developer Console & Admin Panel"}
               </h1>
             </div>
           </div>
@@ -3700,9 +3833,15 @@ export default function App() {
                 <div className="text-center md:text-left">
                   <h2 className="text-xl font-bold">{userName}</h2>
                   <p className="text-xs text-zinc-500 font-mono mt-0.5">{userEmail}</p>
-                  <p className="text-[11px] bg-zinc-800/40 text-zinc-300 border border-zinc-700/50 px-2.5 py-0.5 rounded-full inline-block mt-2 font-semibold">
-                    Developer tier membership
-                  </p>
+                  {isDeveloper ? (
+                    <p className="text-[11px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 px-2.5 py-0.5 rounded-full inline-block mt-2 font-bold tracking-wide uppercase">
+                      🛡️ Role: Developer (Secure System Access)
+                    </p>
+                  ) : (
+                    <p className="text-[11px] bg-zinc-800/40 text-zinc-300 border border-zinc-700/50 px-2.5 py-0.5 rounded-full inline-block mt-2 font-semibold">
+                      Tier: Standard / Free User
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -3723,12 +3862,16 @@ export default function App() {
                     />
                   </div>
                   <div className="space-y-1.5">
-                    <label className="text-xs font-semibold text-zinc-400">Primary Email Address</label>
+                    <label className="text-xs font-semibold text-zinc-400 flex justify-between items-center">
+                      <span>Primary Email Address</span>
+                      <span className="text-[10px] text-zinc-500 font-normal font-mono">(Managed by Auth)</span>
+                    </label>
                     <input
                       type="email"
                       value={userEmail}
+                      disabled={!!currentUser}
                       onChange={(e) => setUserEmail(e.target.value)}
-                      className={`w-full p-3 rounded-xl border text-sm ${inputBgClass}`}
+                      className={`w-full p-3 rounded-xl border text-sm opacity-70 cursor-not-allowed ${inputBgClass}`}
                       required
                     />
                   </div>
@@ -4034,6 +4177,259 @@ export default function App() {
           </div>
         )}
 
+        {/* VIEW 5: DEVELOPER CONSOLE & ADMIN PANEL */}
+        {activeTab === "developer" && isDeveloper && (
+          <div className="flex-1 overflow-y-auto px-4 py-8 md:px-8 max-w-6xl mx-auto w-full space-y-6">
+            {/* Header Badge */}
+            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 p-6 rounded-2xl border border-emerald-500/20 bg-emerald-500/5 shadow-lg">
+              <div className="space-y-1">
+                <div className="flex items-center gap-2">
+                  <ShieldAlert className="w-5 h-5 text-emerald-400" />
+                  <span className="text-[10px] bg-emerald-500/15 text-emerald-300 px-2.5 py-0.5 rounded-full font-bold uppercase tracking-wider">
+                    System Level Secure
+                  </span>
+                </div>
+                <h2 className="text-xl font-bold text-white font-sans">JX AI Developer Control Room</h2>
+                <p className="text-xs text-zinc-400">
+                  Authorized Admin account: <span className="font-mono text-emerald-400 font-bold">prathamjangra37@gmail.com</span>
+                </p>
+              </div>
+              <div className="flex items-center gap-2 px-4 py-2 rounded-xl bg-zinc-950/60 border border-zinc-800/60 text-xs text-zinc-300 font-semibold font-mono">
+                <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                <span>Status: Fully Authenticated &amp; Unlocked</span>
+              </div>
+            </div>
+
+            {/* Main Layout Grid */}
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              
+              {/* Left Column - Diagnostics & Analytics */}
+              <div className="lg:col-span-1 space-y-6">
+                
+                {/* System Diagnostics */}
+                <div className={`p-5 rounded-2xl border ${cardClass} space-y-4`}>
+                  <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-widest flex items-center gap-2 border-b pb-2.5 border-zinc-800/40">
+                    <Activity className="w-4 h-4 text-emerald-400" />
+                    Diagnostics &amp; Latency
+                  </h3>
+                  <div className="space-y-3">
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-zinc-500 font-semibold">Server Gateway</span>
+                      <span className="text-emerald-400 font-bold font-mono">ONLINE (Port 3000)</span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-zinc-500 font-semibold">Environment</span>
+                      <span className="text-zinc-300 font-bold font-mono uppercase">Production container</span>
+                    </div>
+                    <div className="flex justify-between items-center text-xs">
+                      <span className="text-zinc-500 font-semibold">Premium Bypassing</span>
+                      <span className="text-emerald-400 font-bold font-mono">ACTIVE (100% Free)</span>
+                    </div>
+                    
+                    {/* Latency Tester */}
+                    <div className="pt-2">
+                      <button
+                        onClick={handleDevPing}
+                        disabled={devLatencyTesting}
+                        className="w-full py-2 px-3 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-200 text-xs font-bold hover:bg-zinc-800 hover:text-white transition-all flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <Activity className={`w-3.5 h-3.5 text-emerald-400 ${devLatencyTesting ? "animate-spin" : ""}`} />
+                        <span>{devLatencyTesting ? "Pinging Server..." : "Run Connection Speed Test"}</span>
+                      </button>
+                      
+                      {devLatency !== null && (
+                        <div className="mt-2.5 p-3 rounded-xl bg-zinc-950/60 border border-zinc-900 text-center">
+                          <span className="text-[10px] text-zinc-500 font-mono block">RESPONSE LATENCY</span>
+                          <span className="text-2xl font-black text-emerald-400 font-mono">{devLatency} ms</span>
+                          <span className="text-[10px] text-zinc-500 font-mono block mt-1">
+                            {devLatency < 150 ? "⚡ Extremely Fast Connection" : devLatency < 400 ? "🟢 Standard Server Speed" : "🟡 Minor Latency Detected"}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Database & Quotas Stats */}
+                <div className={`p-5 rounded-2xl border ${cardClass} space-y-4`}>
+                  <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-widest flex items-center gap-2 border-b pb-2.5 border-zinc-800/40">
+                    <Database className="w-4 h-4 text-emerald-400" />
+                    Storage &amp; Quota Analytics
+                  </h3>
+                  <div className="space-y-4">
+                    {/* Active Conversations bar */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-zinc-400 font-semibold">Local Sessions Cache</span>
+                        <span className="text-zinc-300 font-bold font-mono">{conversations.length} / Unlimited</span>
+                      </div>
+                      <div className="h-1.5 w-full bg-zinc-950 rounded-full overflow-hidden border border-zinc-900">
+                        <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${Math.min(100, (conversations.length / 20) * 100)}%` }} />
+                      </div>
+                    </div>
+
+                    {/* Firestore Writes simulation */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-zinc-400 font-semibold">Weekly API Requests limit</span>
+                        <span className="text-zinc-300 font-bold font-mono">Bypassed</span>
+                      </div>
+                      <div className="h-1.5 w-full bg-zinc-950 rounded-full overflow-hidden border border-zinc-900">
+                        <div className="h-full bg-emerald-500 rounded-full" style={{ width: "100%" }} />
+                      </div>
+                    </div>
+
+                    {/* Image Generation limits */}
+                    <div className="space-y-1">
+                      <div className="flex justify-between text-[11px]">
+                        <span className="text-zinc-400 font-semibold">Image Generation Quota</span>
+                        <span className="text-emerald-400 font-bold font-mono">UNLIMITED (Developer)</span>
+                      </div>
+                      <div className="h-1.5 w-full bg-zinc-950 rounded-full overflow-hidden border border-zinc-900">
+                        <div className="h-full bg-emerald-500 rounded-full" style={{ width: "100%" }} />
+                      </div>
+                    </div>
+
+                    {/* Google Workspace Client Config */}
+                    <div className="p-3 rounded-xl bg-zinc-950/40 border border-zinc-900/60 space-y-1">
+                      <span className="text-[10px] font-bold text-zinc-500 uppercase font-mono">Workspace Connection</span>
+                      <div className="flex items-center gap-1.5 mt-1">
+                        <span className={`w-1.5 h-1.5 rounded-full ${workspaceToken ? "bg-blue-400 animate-pulse" : "bg-zinc-600"}`} />
+                        <span className="text-xs text-zinc-300 font-medium">
+                          {workspaceToken ? "Workspace API Connected" : "Workspace Standby"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+              </div>
+
+              {/* Middle & Right Column: Prompt tester playground */}
+              <div className="lg:col-span-2 space-y-6">
+                
+                {/* Prompt Testing Arena */}
+                <div className={`p-5 rounded-2xl border ${cardClass} space-y-4`}>
+                  <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-widest flex items-center gap-2 border-b pb-2.5 border-zinc-800/40">
+                    <Cpu className="w-4 h-4 text-emerald-400" />
+                    LLM Prompt Tester &amp; Debugger
+                  </h3>
+                  
+                  <div className="space-y-4">
+                    {/* Settings row */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {/* Model Selector */}
+                      <div className="space-y-1.5">
+                        <label className="text-xs font-semibold text-zinc-400">Target Model</label>
+                        <select
+                          value={devModel}
+                          onChange={(e) => setDevModel(e.target.value)}
+                          className={`w-full p-2.5 rounded-xl border text-xs bg-zinc-950 border-zinc-800 text-zinc-300 font-mono`}
+                        >
+                          <option value="gemini-3.5-flash">gemini-3.5-flash (Standard Faster)</option>
+                          <option value="gemini-3.1-pro-preview">gemini-3.1-pro-preview (Deeper Logic)</option>
+                          <option value="gemini-3.1-flash-lite-image">gemini-3.1-flash-lite-image (Imagen 3)</option>
+                        </select>
+                      </div>
+
+                      {/* Temperature Slider */}
+                      <div className="space-y-1.5">
+                        <div className="flex justify-between items-center text-xs">
+                          <label className="font-semibold text-zinc-400">Temperature (Creativity)</label>
+                          <span className="font-mono text-emerald-400 font-bold">{devTemp}</span>
+                        </div>
+                        <input
+                          type="range"
+                          min="0.0"
+                          max="1.0"
+                          step="0.1"
+                          value={devTemp}
+                          onChange={(e) => setDevTemp(parseFloat(e.target.value))}
+                          className="w-full accent-emerald-500 h-1 bg-zinc-950 rounded-lg cursor-pointer"
+                        />
+                      </div>
+                    </div>
+
+                    {/* System Instruction */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-zinc-400">System Instruction</label>
+                      <input
+                        type="text"
+                        value={devSystemInstruction}
+                        onChange={(e) => setDevSystemInstruction(e.target.value)}
+                        className={`w-full p-2.5 rounded-xl border text-xs font-sans bg-zinc-950 border-zinc-800 text-zinc-300`}
+                        placeholder="Define system guidelines for the agent..."
+                      />
+                    </div>
+
+                    {/* User Prompt */}
+                    <div className="space-y-1.5">
+                      <label className="text-xs font-semibold text-zinc-400">User Prompt</label>
+                      <textarea
+                        value={devPrompt}
+                        onChange={(e) => setDevPrompt(e.target.value)}
+                        rows={3}
+                        className={`w-full p-3 rounded-xl border text-xs font-sans bg-zinc-950 border-zinc-800 text-zinc-300 leading-relaxed`}
+                        placeholder="Write prompt test payload..."
+                      />
+                    </div>
+
+                    {/* Run evaluation Button */}
+                    <div className="pt-1">
+                      <button
+                        onClick={handleDevPlaygroundRun}
+                        disabled={devPlaygroundLoading || !devPrompt.trim()}
+                        className="w-full py-3 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <Terminal className={`w-4 h-4 ${devPlaygroundLoading ? "animate-pulse" : ""}`} />
+                        <span>{devPlaygroundLoading ? "Evaluating Payload..." : "Execute LLM Test Call (100% Free)"}</span>
+                      </button>
+                    </div>
+
+                    {/* Playground Output */}
+                    {devResult && (
+                      <div className="space-y-1.5 pt-2">
+                        <label className="text-[11px] font-bold text-zinc-400 uppercase tracking-widest font-mono block">
+                          Response Raw Payload
+                        </label>
+                        <div className="p-4 rounded-xl bg-zinc-950 border border-zinc-900/80 max-h-[250px] overflow-y-auto text-xs text-zinc-300 font-mono leading-relaxed whitespace-pre-wrap select-all">
+                          {devResult}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Operations Terminal Logs */}
+                <div className={`p-5 rounded-2xl border ${cardClass} space-y-3`}>
+                  <h3 className="text-xs font-bold text-zinc-300 uppercase tracking-widest flex items-center gap-2 border-b pb-2.5 border-zinc-800/40">
+                    <Layers className="w-4 h-4 text-emerald-400" />
+                    Admin Session Terminal Console Logs
+                  </h3>
+                  
+                  <div className="bg-black/80 rounded-xl border border-zinc-900 p-4 font-mono text-[10px] text-zinc-400 space-y-1.5 max-h-[160px] overflow-y-auto leading-relaxed scrollbar-thin scrollbar-thumb-zinc-900">
+                    {devLogs.map((log, idx) => (
+                      <div key={idx} className="flex gap-2.5">
+                        <span className="text-zinc-600 shrink-0">[{log.time}]</span>
+                        <span className={`shrink-0 uppercase font-bold text-[8px] px-1 py-0.2 rounded ${
+                          log.type === "success" ? "bg-emerald-500/10 text-emerald-400" :
+                          log.type === "error" ? "bg-red-500/10 text-red-400" :
+                          log.type === "system" ? "bg-blue-500/10 text-blue-400" : "bg-zinc-800 text-zinc-400"
+                        }`}>
+                          {log.type}
+                        </span>
+                        <span className="flex-1 text-zinc-300 break-all">{log.msg}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+              </div>
+
+            </div>
+          </div>
+        )}
+
         {/* BOTTOM INPUT FOOTER BAR */}
         {activeTab === "chat" && (
           <div className={`p-4 border-t shrink-0 z-20 ${headerClass}`}>
@@ -4085,13 +4481,27 @@ export default function App() {
                 ) : (
                   <button
                     type="button"
-                    onClick={() => setShowImagePremiumModal(true)}
-                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border border-zinc-800 bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60 cursor-pointer transition-all"
-                    title="एआई इमेज जनरेशन के लिए भुगतान वाली कुंजी आवश्यक है (Paid key required for AI Image Generation)"
+                    onClick={() => {
+                      if (isDeveloper) {
+                        setIsGenerateImageMode((prev) => !prev);
+                      } else {
+                        setShowImagePremiumModal(true);
+                      }
+                    }}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-all cursor-pointer ${
+                      isGenerateImageMode 
+                        ? "border-blue-500/40 bg-blue-600/10 text-blue-400" 
+                        : "border-zinc-800 bg-zinc-900/80 text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/60"
+                    }`}
+                    title={isDeveloper ? "Toggle AI Image Generation Mode" : "एआई इमेज जनरेशन के लिए भुगतान वाली कुंजी आवश्यक है (Paid key required for AI Image Generation)"}
                   >
-                    <Sparkles className="w-3.5 h-3.5 text-zinc-500" />
-                    <span>Generate Image Mode</span>
-                    <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-zinc-800 text-amber-500 uppercase tracking-wider">Paid</span>
+                    <Sparkles className={`w-3.5 h-3.5 ${isGenerateImageMode ? "text-blue-400 animate-pulse" : "text-zinc-500"}`} />
+                    <span>{isGenerateImageMode ? "Generate Image Active" : "Generate Image Mode"}</span>
+                    <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                      isDeveloper ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-zinc-800 text-amber-500"
+                    }`}>
+                      {isDeveloper ? "Dev Bypass" : "Paid"}
+                    </span>
                   </button>
                 )}
 

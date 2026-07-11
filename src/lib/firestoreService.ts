@@ -137,3 +137,71 @@ export const transferUserConversations = async (fromUid: string, toUid: string):
     throw error;
   }
 };
+
+/**
+ * Registers/updates a user inside the global users_directory collection
+ */
+export const registerUserInDirectory = async (
+  uid: string, 
+  email: string | null, 
+  displayName: string | null, 
+  isAnonymous: boolean
+): Promise<void> => {
+  if (!uid) return;
+  try {
+    const docRef = doc(db, "users_directory", uid);
+    const resolvedEmail = email || "anonymous@guest.local";
+    const resolvedRole = resolvedEmail === "prathamjangra37@gmail.com" ? "Developer" : "Member";
+    await setDoc(docRef, {
+      uid,
+      email: resolvedEmail,
+      displayName: displayName || "Guest User",
+      isAnonymous: isAnonymous,
+      role: resolvedRole,
+      lastLogin: new Date()
+    }, { merge: true });
+  } catch (error) {
+    console.error(`Error registering user ${uid} in directory:`, error);
+  }
+};
+
+/**
+ * Gets all registered users from users_directory
+ */
+export const getAllUsersFromDirectory = async (): Promise<any[]> => {
+  try {
+    const colRef = collection(db, "users_directory");
+    const snapshot = await getDocs(colRef);
+    const users: any[] = [];
+    snapshot.forEach((d) => {
+      const data = d.data();
+      users.push({
+        uid: data.uid || d.id,
+        email: data.email || "anonymous@guest.local",
+        displayName: data.displayName || "Guest User",
+        isAnonymous: data.isAnonymous || false,
+        role: data.role || "Member",
+        lastLogin: data.lastLogin ? toDate(data.lastLogin) : new Date()
+      });
+    });
+    return users;
+  } catch (error) {
+    console.error("Error getting users directory:", error);
+    return [];
+  }
+};
+
+/**
+ * Admin: simulated updates on users
+ */
+export const adminUpdateUserMetadata = async (uid: string, data: any): Promise<void> => {
+  if (!uid) return;
+  try {
+    const docRef = doc(db, "users_directory", uid);
+    await setDoc(docRef, data, { merge: true });
+  } catch (error) {
+    console.error(`Error updating user metadata for ${uid}:`, error);
+    throw error;
+  }
+};
+
