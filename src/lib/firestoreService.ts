@@ -2,6 +2,7 @@ import {
   collection, 
   doc, 
   setDoc, 
+  getDoc,
   getDocs, 
   deleteDoc, 
   query, 
@@ -201,6 +202,44 @@ export const adminUpdateUserMetadata = async (uid: string, data: any): Promise<v
     await setDoc(docRef, data, { merge: true });
   } catch (error) {
     console.error(`Error updating user metadata for ${uid}:`, error);
+    throw error;
+  }
+};
+
+/**
+ * Retrieves the user's custom profile from their users_directory document.
+ */
+export const getUserProfile = async (uid: string): Promise<any> => {
+  if (!uid) return null;
+  try {
+    const docRef = doc(db, "users_directory", uid);
+    const snap = await getDoc(docRef);
+    if (snap.exists()) {
+      return snap.data();
+    }
+    return null;
+  } catch (error) {
+    console.error(`Error getting user profile for ${uid}:`, error);
+    return null;
+  }
+};
+
+/**
+ * Saves/updates a user's profile fields in Firestore.
+ */
+export const saveUserProfile = async (
+  uid: string,
+  profile: { displayName?: string; bio?: string; photoURL?: string }
+): Promise<void> => {
+  if (!uid) return;
+  try {
+    const docRef = doc(db, "users_directory", uid);
+    await setDoc(docRef, {
+      ...profile,
+      updatedAt: new Date()
+    }, { merge: true });
+  } catch (error) {
+    console.error(`Error saving user profile for ${uid}:`, error);
     throw error;
   }
 };

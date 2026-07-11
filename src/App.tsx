@@ -66,8 +66,10 @@ import {
   guestSignIn,
   linkGuestToGoogle,
   sendPhoneOTP,
-  auth
+  auth,
+  storage
 } from "./lib/firebaseAuth";
+import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { 
   saveUserConversation, 
   deleteUserConversation, 
@@ -75,7 +77,9 @@ import {
   transferUserConversations,
   registerUserInDirectory,
   getAllUsersFromDirectory,
-  adminUpdateUserMetadata
+  adminUpdateUserMetadata,
+  getUserProfile,
+  saveUserProfile
 } from "./lib/firestoreService";
 import { 
   listCalendarEvents, 
@@ -175,6 +179,9 @@ export default function App() {
   // User Profile States
   const [userName, setUserName] = useState(() => localStorage.getItem("udgtp_profile_name") || "");
   const [userEmail, setUserEmail] = useState(() => localStorage.getItem("udgtp_profile_email") || "");
+  const [userBio, setUserBio] = useState("");
+  const [userPhotoURL, setUserPhotoURL] = useState("");
+  const [uploadingPhoto, setUploadingPhoto] = useState(false);
 
   // Settings states
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -245,6 +252,24 @@ export default function App() {
           setUserEmail(user.email);
           localStorage.setItem("udgtp_profile_email", user.email);
         }
+        
+        // Load custom user profile from Firestore users_directory
+        getUserProfile(user.uid)
+          .then((profile) => {
+            if (profile) {
+              if (profile.displayName) {
+                setUserName(profile.displayName);
+                localStorage.setItem("udgtp_profile_name", profile.displayName);
+              }
+              if (profile.bio) {
+                setUserBio(profile.bio);
+              }
+              if (profile.photoURL) {
+                setUserPhotoURL(profile.photoURL);
+              }
+            }
+          })
+          .catch((err) => console.error("Error loading profile from Firestore:", err));
         
         // Sync user profile in Firebase users_directory securely
         registerUserInDirectory(
@@ -493,6 +518,7 @@ export default function App() {
   };
 
   const handleWorkspaceLogin = async () => {
+    if (workspaceAuthLoading) return;
     setWorkspaceAuthLoading(true);
     setWorkspaceAuthError(null);
     try {
@@ -514,6 +540,7 @@ export default function App() {
       console.error("Google login failed:", err);
       if (
         err.code === "auth/popup-closed-by-user" || 
+        err.code === "auth/cancelled-popup-request" || 
         err.message?.includes("popup-closed-by-user") || 
         err.message?.includes("closed-by-user") || 
         err.message?.includes("popup")
@@ -657,9 +684,12 @@ export default function App() {
   };
 
   const [isLinkingLoading, setIsLinkingLoading] = useState(false);
+  const [linkingError, setLinkingError] = useState<string | null>(null);
 
   const handleLinkToGoogle = async () => {
+    if (isLinkingLoading) return;
     setIsLinkingLoading(true);
+    setLinkingError(null);
     try {
       const result = await linkGuestToGoogle();
       if (result) {
@@ -695,11 +725,27 @@ export default function App() {
             }
           } catch (mergeErr: any) {
             console.error("Merge error:", mergeErr);
-            handleShowNotification(`Merge failed: ${mergeErr.message || mergeErr}`);
+            if (
+              mergeErr.code === "auth/cancelled-popup-request" || 
+              mergeErr.code === "auth/popup-closed-by-user" || 
+              mergeErr.message?.includes("popup")
+            ) {
+              setLinkingError("IFRAME_POPUP_CLOSED");
+              handleShowNotification("Iframe restrictions blocked the login. Click 'Open in new tab' to sign in successfully.");
+            } else {
+              handleShowNotification(`Merge failed: ${mergeErr.message || mergeErr}`);
+            }
           }
         }
       } else if (err.code === "auth/unauthorized-domain" || err.message?.includes("unauthorized-domain")) {
         handleShowNotification("Domain not authorized in Firebase Console -> Auth -> Settings -> Authorized Domains.");
+      } else if (
+        err.code === "auth/cancelled-popup-request" || 
+        err.code === "auth/popup-closed-by-user" || 
+        err.message?.includes("popup")
+      ) {
+        setLinkingError("IFRAME_POPUP_CLOSED");
+        handleShowNotification("Iframe restrictions blocked the popup. Click 'Open in new tab' to link successfully.");
       } else {
         handleShowNotification(`Failed to link account: ${err.message || err}`);
       }
@@ -1988,10 +2034,77 @@ export default function App() {
     }
   };
 
-  const handleSaveProfile = (e: React.FormEvent) => {
+  const handleSaveProfile = async (e: React.FormEvent) => {
     e.preventDefault();
     localStorage.setItem("udgtp_profile_name", userName);
-    handleShowNotification("Profile updated successfully!");
+    
+    if (currentUser) {
+      try {
+        await saveUserProfile(currentUser.uid, {
+          displayName: userName,
+          bio: userBio,
+          photoURL: userPhotoURL
+        });
+        handleShowNotification("Profile successfully updated in Firestore!");
+      } catch (err: any) {
+        console.error("Error saving profile to Firestore:", err);
+        handleShowNotification(`Offline update saved locally. Firestore error: ${err.message}`);
+      }
+    } else {
+      handleShowNotification("Profile updated successfully (stored locally on guest account)!");
+    }
+  };
+
+  const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    if (!currentUser) {
+      handleShowNotification("Please sign in or register to upload a custom profile photo.");
+      return;
+    }
+
+    setUploadingPhoto(true);
+    try {
+      // Create a unique file name/path in storage
+      const storageRef = ref(storage, `users/${currentUser.uid}/profile_photo_${Date.now()}`);
+      
+      // Upload the bytes
+      const snapshot = await uploadBytes(storageRef, file);
+      
+      // Get the direct download URL
+      const downloadURL = await getDownloadURL(snapshot.ref);
+      
+      // Update our photoURL state
+      setUserPhotoURL(downloadURL);
+      
+      // Save it directly in the profile in Firestore!
+      await saveUserProfile(currentUser.uid, {
+        photoURL: downloadURL
+      });
+
+      handleShowNotification("Profile photo successfully uploaded and synchronized!");
+    } catch (err: any) {
+      console.error("Firebase Storage Upload Error:", err);
+      // Fallback: If Firebase Storage fails or isn't enabled, read as base64 data-url and store in firestore
+      try {
+        const reader = new FileReader();
+        reader.onloadend = async () => {
+          const base64data = reader.result as string;
+          setUserPhotoURL(base64data);
+          await saveUserProfile(currentUser.uid, {
+            photoURL: base64data
+          });
+          handleShowNotification("Photo uploaded using Local Database secure storage fallback!");
+        };
+        reader.readAsDataURL(file);
+      } catch (fallbackErr: any) {
+        console.error("Fallback upload error:", fallbackErr);
+        handleShowNotification(`Upload failed: ${err.message || err}`);
+      }
+    } finally {
+      setUploadingPhoto(false);
+    }
   };
 
   const handleSaveSettings = (newTheme: "dark" | "light", newLang: "English" | "Hinglish" | "Hindi") => {
@@ -2725,27 +2838,62 @@ export default function App() {
 
           <div className="border-t border-zinc-800/40 my-3 pt-3 space-y-2">
             <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-zinc-950/45 border border-zinc-900">
-              <div className="w-8 h-8 rounded-full bg-blue-600/10 border border-blue-500/20 text-blue-400 flex items-center justify-center font-bold text-sm uppercase shrink-0">
-                {userName ? userName.charAt(0) : "U"}
-              </div>
+              {userPhotoURL ? (
+                <img 
+                  src={userPhotoURL} 
+                  alt="Avatar" 
+                  referrerPolicy="no-referrer"
+                  className="w-8 h-8 rounded-full border border-zinc-800 object-cover shrink-0"
+                />
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-blue-600/10 border border-blue-500/20 text-blue-400 flex items-center justify-center font-bold text-sm uppercase shrink-0">
+                  {userName ? userName.charAt(0) : "U"}
+                </div>
+              )}
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-bold text-zinc-300 truncate leading-none">{userName || "JX User"}</p>
                 <p className="text-[10px] text-zinc-500 font-mono truncate mt-1">{userEmail}</p>
               </div>
             </div>
             {currentUser?.isAnonymous && (
-              <button
-                onClick={handleLinkToGoogle}
-                disabled={isLinkingLoading}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold cursor-pointer transition-all bg-blue-600/10 text-blue-400 hover:bg-blue-600/20 border border-blue-500/15"
-              >
-                {isLinkingLoading ? (
-                  <span className="w-4 h-4 rounded-full border-2 border-t-blue-400 border-zinc-800 animate-spin" />
-                ) : (
-                  <Globe className="w-4 h-4 text-blue-400 animate-pulse" />
+              <div className="space-y-2">
+                <button
+                  onClick={handleLinkToGoogle}
+                  disabled={isLinkingLoading}
+                  className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-xs font-bold cursor-pointer transition-all bg-blue-600/10 text-blue-400 hover:bg-blue-600/20 border border-blue-500/15"
+                >
+                  {isLinkingLoading ? (
+                    <span className="w-4 h-4 rounded-full border-2 border-t-blue-400 border-zinc-800 animate-spin" />
+                  ) : (
+                    <Globe className="w-4 h-4 text-blue-400 animate-pulse" />
+                  )}
+                  <span>Upgrade / Link Google</span>
+                </button>
+                
+                {linkingError && (
+                  <div className="p-3.5 rounded-xl border border-red-500/20 bg-red-500/5 text-left text-red-400 space-y-2">
+                    {linkingError === "IFRAME_POPUP_CLOSED" ? (
+                      <>
+                        <p className="font-bold text-[11px] flex items-center gap-1.5">
+                          <span>⚠️</span> Popup Blocked / Cancelled
+                        </p>
+                        <p className="text-zinc-300 text-[10px] leading-normal">
+                          Sandbox security policies inside the AI Studio iframe restrict popup linking dialogs.
+                        </p>
+                        <div className="p-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/80 text-[10px] space-y-1.5 text-zinc-300 font-sans leading-relaxed">
+                          <p className="font-bold text-zinc-200">🛠️ Simple Fix:</p>
+                          <ol className="list-decimal pl-3.5 space-y-1">
+                            <li>Click the <strong>'Open in new tab'</strong> (↗️) icon at the top-right of AI Studio.</li>
+                            <li>Run in standalone tab, then click <strong>'Upgrade / Link Google'</strong> again!</li>
+                          </ol>
+                        </div>
+                      </>
+                    ) : (
+                      <p className="font-mono text-[10px]">{linkingError}</p>
+                    )}
+                  </div>
                 )}
-                <span>Upgrade / Link Google</span>
-              </button>
+              </div>
             )}
             <button
               onClick={handleAppLogout}
@@ -3033,30 +3181,62 @@ export default function App() {
 
                 <div className="border-t border-zinc-800/40 my-3 pt-3 space-y-2">
                   <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-zinc-950/45 border border-zinc-900">
-                    <div className="w-7 h-7 rounded-full bg-blue-600/10 border border-blue-500/20 text-blue-400 flex items-center justify-center font-bold text-xs uppercase shrink-0">
-                      {userName ? userName.charAt(0) : "U"}
-                    </div>
+                    {userPhotoURL ? (
+                      <img 
+                        src={userPhotoURL} 
+                        alt="Avatar" 
+                        referrerPolicy="no-referrer"
+                        className="w-7 h-7 rounded-full border border-zinc-800 object-cover shrink-0"
+                      />
+                    ) : (
+                      <div className="w-7 h-7 rounded-full bg-blue-600/10 border border-blue-500/20 text-blue-400 flex items-center justify-center font-bold text-xs uppercase shrink-0">
+                        {userName ? userName.charAt(0) : "U"}
+                      </div>
+                    )}
                     <div className="flex-1 min-w-0">
                       <p className="text-[11px] font-bold text-zinc-300 truncate leading-none">{userName || "JX User"}</p>
                       <p className="text-[9px] text-zinc-500 font-mono truncate mt-0.5">{userEmail}</p>
                     </div>
                   </div>
                   {currentUser?.isAnonymous && (
-                    <button
-                      onClick={() => {
-                        handleLinkToGoogle();
-                        setIsSidebarOpen(false);
-                      }}
-                      disabled={isLinkingLoading}
-                      className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all bg-blue-600/10 text-blue-400 hover:bg-blue-600/20 border border-blue-500/15"
-                    >
-                      {isLinkingLoading ? (
-                        <span className="w-3 h-3 rounded-full border-2 border-t-blue-400 border-zinc-800 animate-spin" />
-                      ) : (
-                        <Globe className="w-3.5 h-3.5 text-blue-400 animate-pulse" />
+                    <div className="space-y-2">
+                      <button
+                        onClick={handleLinkToGoogle}
+                        disabled={isLinkingLoading}
+                        className="w-full flex items-center gap-3 px-3 py-2 rounded-xl text-xs font-bold cursor-pointer transition-all bg-blue-600/10 text-blue-400 hover:bg-blue-600/20 border border-blue-500/15"
+                      >
+                        {isLinkingLoading ? (
+                          <span className="w-3 h-3 rounded-full border-2 border-t-blue-400 border-zinc-800 animate-spin" />
+                        ) : (
+                          <Globe className="w-3.5 h-3.5 text-blue-400 animate-pulse" />
+                        )}
+                        <span>Upgrade / Link Google</span>
+                      </button>
+
+                      {linkingError && (
+                        <div className="p-3.5 rounded-xl border border-red-500/20 bg-red-500/5 text-left text-red-400 space-y-2">
+                          {linkingError === "IFRAME_POPUP_CLOSED" ? (
+                            <>
+                              <p className="font-bold text-[11px] flex items-center gap-1.5">
+                                <span>⚠️</span> Popup Blocked / Cancelled
+                              </p>
+                              <p className="text-zinc-300 text-[10px] leading-normal">
+                                Sandbox security policies inside the AI Studio iframe restrict popup linking dialogs.
+                              </p>
+                              <div className="p-2.5 bg-zinc-950/60 rounded-lg border border-zinc-800/80 text-[10px] space-y-1.5 text-zinc-300 font-sans leading-relaxed">
+                                <p className="font-bold text-zinc-200">🛠️ Simple Fix:</p>
+                                <ol className="list-decimal pl-3.5 space-y-1">
+                                  <li>Click the <strong>'Open in new tab'</strong> (↗️) icon at the top-right of AI Studio.</li>
+                                  <li>Run in standalone tab, then click <strong>'Upgrade / Link Google'</strong> again!</li>
+                                </ol>
+                              </div>
+                            </>
+                          ) : (
+                            <p className="font-mono text-[10px]">{linkingError}</p>
+                          )}
+                        </div>
                       )}
-                      <span>Upgrade / Link Google</span>
-                    </button>
+                    </div>
                   )}
                   <button
                     onClick={() => {
@@ -3157,6 +3337,26 @@ export default function App() {
                 Return to Chat
               </button>
             )}
+
+            {/* Header User Profile Avatar Shortcut */}
+            <button 
+              onClick={() => setActiveTab("profile")}
+              className="relative cursor-pointer group flex items-center justify-center shrink-0 ml-1 rounded-full focus:outline-none focus:ring-1 focus:ring-zinc-700"
+              title="View Profile"
+            >
+              {userPhotoURL ? (
+                <img 
+                  src={userPhotoURL} 
+                  alt="Avatar" 
+                  referrerPolicy="no-referrer"
+                  className="w-7 h-7 rounded-full border border-zinc-800 object-cover hover:border-zinc-500 transition-all shadow-md group-hover:scale-105"
+                />
+              ) : (
+                <div className="w-7 h-7 rounded-full bg-zinc-950 border border-zinc-800 hover:border-zinc-500 flex items-center justify-center font-bold text-xs text-white shrink-0 shadow-md group-hover:scale-105 transition-all">
+                  {userName.charAt(0) || "P"}
+                </div>
+              )}
+            </button>
           </div>
         </header>
 
@@ -3444,9 +3644,18 @@ export default function App() {
 
                       {/* Avatar Indicator - Right */}
                       {isUser && (
-                        <div className="w-8 h-8 md:w-9 md:h-9 rounded-full bg-zinc-800 text-zinc-300 font-bold text-xs flex items-center justify-center shrink-0 border border-zinc-700">
-                          {userName.charAt(0) || "Y"}
-                        </div>
+                        userPhotoURL ? (
+                          <img 
+                            src={userPhotoURL} 
+                            alt="User Avatar" 
+                            referrerPolicy="no-referrer"
+                            className="w-8 h-8 md:w-9 md:h-9 rounded-full object-cover shrink-0 border border-zinc-700"
+                          />
+                        ) : (
+                          <div className="w-8 h-8 md:w-9 md:h-9 rounded-full bg-zinc-800 text-zinc-300 font-bold text-xs flex items-center justify-center shrink-0 border border-zinc-700">
+                            {userName.charAt(0) || "Y"}
+                          </div>
+                        )
                       )}
 
                     </div>
@@ -3976,18 +4185,48 @@ export default function App() {
             <div className={`p-6 md:p-8 rounded-2xl border ${cardClass}`}>
               
               <div className="flex flex-col md:flex-row items-center gap-6 border-b pb-6 mb-6 border-zinc-800/40">
-                <div className="w-20 h-20 rounded-full bg-black border border-zinc-800 flex items-center justify-center font-bold text-3xl text-white shadow-[0_0_15px_rgba(255,255,255,0.15)] shrink-0">
-                  {userName.charAt(0) || "P"}
+                <div className="relative group">
+                  {userPhotoURL ? (
+                    <img 
+                      src={userPhotoURL} 
+                      alt="Profile Avatar" 
+                      referrerPolicy="no-referrer"
+                      className="w-20 h-20 rounded-full border border-zinc-800 object-cover shadow-[0_0_15px_rgba(59,130,246,0.25)]"
+                    />
+                  ) : (
+                    <div className="w-20 h-20 rounded-full bg-black border border-zinc-800 flex items-center justify-center font-bold text-3xl text-white shadow-[0_0_15px_rgba(255,255,255,0.15)] shrink-0">
+                      {userName.charAt(0) || "P"}
+                    </div>
+                  )}
+                  <label className="absolute inset-0 flex items-center justify-center rounded-full bg-black/60 opacity-0 group-hover:opacity-100 transition-all cursor-pointer">
+                    <span className="text-[10px] text-white font-bold uppercase tracking-wider">Change</span>
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      onChange={handlePhotoUpload} 
+                      className="hidden" 
+                    />
+                  </label>
+                  {uploadingPhoto && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/75 rounded-full">
+                      <div className="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                    </div>
+                  )}
                 </div>
-                <div className="text-center md:text-left">
-                  <h2 className="text-xl font-bold">{userName}</h2>
-                  <p className="text-xs text-zinc-500 font-mono mt-0.5">{userEmail}</p>
+                <div className="text-center md:text-left space-y-1">
+                  <h2 className="text-xl font-bold flex items-center gap-2 justify-center md:justify-start">
+                    {userName}
+                  </h2>
+                  <p className="text-xs text-zinc-500 font-mono">{userEmail}</p>
+                  {userBio && (
+                    <p className="text-xs text-zinc-400 italic font-sans max-w-md line-clamp-2">"{userBio}"</p>
+                  )}
                   {isDeveloper ? (
-                    <p className="text-[11px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 px-2.5 py-0.5 rounded-full inline-block mt-2 font-bold tracking-wide uppercase">
+                    <p className="text-[11px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 px-2.5 py-0.5 rounded-full inline-block mt-1 font-bold tracking-wide uppercase">
                       🛡️ Role: Developer (Secure System Access)
                     </p>
                   ) : (
-                    <p className="text-[11px] bg-zinc-800/40 text-zinc-300 border border-zinc-700/50 px-2.5 py-0.5 rounded-full inline-block mt-2 font-semibold">
+                    <p className="text-[11px] bg-zinc-800/40 text-zinc-300 border border-zinc-700/50 px-2.5 py-0.5 rounded-full inline-block mt-1 font-semibold">
                       Tier: Standard / Free User
                     </p>
                   )}
@@ -4026,13 +4265,35 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="pt-2">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-semibold text-zinc-400">Biography / Status Bio</label>
+                  <textarea
+                    value={userBio}
+                    onChange={(e) => setUserBio(e.target.value)}
+                    placeholder="Tell us about yourself or enter your professional status bio..."
+                    rows={3}
+                    className={`w-full p-3 rounded-xl border text-sm resize-none ${inputBgClass}`}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between pt-2">
                   <button
                     type="submit"
-                    className="px-5 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-100 hover:bg-zinc-800 hover:text-white text-xs font-bold transition-all cursor-pointer active:scale-95 shadow-md"
+                    className="px-5 py-2.5 rounded-xl bg-zinc-100 hover:bg-white text-zinc-950 text-xs font-bold transition-all cursor-pointer active:scale-95 shadow-md"
                   >
                     Save profile changes
                   </button>
+                  
+                  <label className="px-4 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800 text-xs font-bold transition-all cursor-pointer active:scale-95 flex items-center gap-1.5 shadow-sm">
+                    {uploadingPhoto ? "Uploading..." : "Upload Photo"}
+                    <input 
+                      type="file" 
+                      accept="image/*" 
+                      onChange={handlePhotoUpload} 
+                      className="hidden" 
+                      disabled={uploadingPhoto}
+                    />
+                  </label>
                 </div>
               </form>
 
