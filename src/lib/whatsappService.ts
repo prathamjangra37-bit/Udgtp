@@ -1,9 +1,8 @@
 import { initializeApp, getApps, App } from "firebase-admin/app";
 import { getFirestore, Firestore, FieldValue } from "firebase-admin/firestore";
 import { getAuth, Auth, UserRecord } from "firebase-admin/auth";
-import fs from "fs";
-import path from "path";
 import { GoogleGenAI } from "@google/genai";
+import firebaseConfig from "../../firebase-applet-config.json";
 
 // Initialize Firebase Admin dynamically using local configurations or ADC
 let dbAdmin: Firestore;
@@ -11,18 +10,7 @@ let authAdmin: Auth;
 
 export function initFirebaseAdmin() {
   if (getApps().length === 0) {
-    let projectId: string | undefined;
-    try {
-      const configPath = path.join(process.cwd(), "firebase-applet-config.json");
-      if (fs.existsSync(configPath)) {
-        const config = JSON.parse(fs.readFileSync(configPath, "utf-8"));
-        projectId = config.projectId;
-      }
-    } catch (err) {
-      console.warn("Failed to load firebase-applet-config.json, falling back to environment:", err);
-    }
-
-    projectId = projectId || process.env.FIREBASE_PROJECT_ID || process.env.GCLOUD_PROJECT;
+    const projectId = firebaseConfig.projectId || process.env.FIREBASE_PROJECT_ID || process.env.GCLOUD_PROJECT;
 
     if (!projectId) {
       console.warn("Firebase Project ID not found in firebase-applet-config.json or environment.");
