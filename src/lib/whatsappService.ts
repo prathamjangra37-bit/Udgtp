@@ -38,14 +38,19 @@ export function initFirebaseAdmin() {
   authAdmin = getAuth();
 }
 
-// Ensure initialized on module import
-initFirebaseAdmin();
+// Helper to lazily initialize Firebase Admin only when needed
+function ensureFirebaseAdmin() {
+  if (!dbAdmin || !authAdmin) {
+    initFirebaseAdmin();
+  }
+}
 
 /**
  * Gets or creates a Firebase Auth user based on their WhatsApp phone number.
  * This links Meta WhatsApp users directly with the secure Firebase Auth ecosystem.
  */
 export async function getOrCreateFirebaseUserByPhone(phone: string, displayName: string | null): Promise<UserRecord> {
+  ensureFirebaseAdmin();
   // Ensure the phone number conforms to E.164 format (starts with +)
   const formattedPhone = phone.startsWith("+") ? phone : `+${phone}`;
   
@@ -71,6 +76,7 @@ export async function getOrCreateFirebaseUserByPhone(phone: string, displayName:
  * This makes the user visible to the Admin panel and aligns with existing schemas.
  */
 export async function syncUserInDirectory(uid: string, phone: string, displayName: string | null) {
+  ensureFirebaseAdmin();
   const formattedPhone = phone.startsWith("+") ? phone : `+${phone}`;
   const docRef = dbAdmin.collection("users_directory").doc(uid);
   
@@ -95,6 +101,7 @@ export async function syncUserInDirectory(uid: string, phone: string, displayNam
  * users/{uid}/conversations/whatsapp_session
  */
 export async function loadWhatsAppConversation(uid: string) {
+  ensureFirebaseAdmin();
   const convRef = dbAdmin
     .collection("users")
     .doc(uid)
@@ -120,6 +127,7 @@ export async function loadWhatsAppConversation(uid: string) {
 }
 
 export async function saveWhatsAppConversation(uid: string, messages: any[], title: string, createdAt: Date) {
+  ensureFirebaseAdmin();
   const convRef = dbAdmin
     .collection("users")
     .doc(uid)
