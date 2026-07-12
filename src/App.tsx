@@ -73,7 +73,7 @@ import {
   auth,
   storage
 } from "./lib/firebaseAuth";
-import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
+import { ref, uploadBytes, uploadBytesResumable, getDownloadURL } from "firebase/storage";
 import { 
   saveUserConversation, 
   deleteUserConversation, 
@@ -85,6 +85,168 @@ import {
   getUserProfile,
   saveUserProfile
 } from "./lib/firestoreService";
+
+// Helper components for Avatars with robust built-in fallbacks
+const JXLogo = ({ 
+  className = "w-8 h-8", 
+  roundedClass = "rounded-xl",
+  glowClass = "shadow-[0_0_12px_rgba(59,130,246,0.3)]",
+  borderClass = "border border-zinc-800",
+  bgClass = "bg-black"
+}: { 
+  className?: string; 
+  roundedClass?: string;
+  glowClass?: string;
+  borderClass?: string;
+  bgClass?: string;
+}) => {
+  const [hasError, setHasError] = useState(false);
+
+  if (hasError) {
+    return (
+      <div className={`flex items-center justify-center shrink-0 ${className} ${roundedClass} ${bgClass} ${borderClass} ${glowClass} text-blue-400`}>
+        <Sparkles className="w-1/2 h-1/2 text-blue-400 animate-pulse" />
+      </div>
+    );
+  }
+
+  return (
+    <img 
+      src="/favicon.png" 
+      alt="JX AI" 
+      referrerPolicy="no-referrer"
+      onError={() => setHasError(true)}
+      className={`object-contain shrink-0 ${className} ${roundedClass} ${bgClass} ${borderClass} ${glowClass}`} 
+    />
+  );
+};
+
+const UserAvatar = ({ 
+  className = "w-8 h-8 md:w-9 md:h-9", 
+  photoUrl = "", 
+  name = "" 
+}: { 
+  className?: string; 
+  photoUrl?: string; 
+  name?: string;
+}) => {
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [photoUrl]);
+
+  if (photoUrl && !hasError) {
+    return (
+      <img
+        src={photoUrl}
+        alt={name || "User"}
+        referrerPolicy="no-referrer"
+        onError={() => setHasError(true)}
+        className={`${className} rounded-full object-cover shrink-0 border border-zinc-750 shadow-sm`}
+      />
+    );
+  }
+
+  return (
+    <div className={`${className} rounded-full bg-gradient-to-br from-zinc-850 to-zinc-950 border border-zinc-800 flex items-center justify-center shrink-0 shadow-sm`}>
+      <UserIcon className="w-[45%] h-[45%] text-zinc-400" />
+    </div>
+  );
+};
+
+// Image Compression using HTML5 Canvas API (efficient client-side, zero external packages)
+const compressImage = (file: File, maxWidth = 350, maxHeight = 350, quality = 0.85): Promise<Blob> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.readAsDataURL(file);
+    reader.onload = (event) => {
+      const img = new Image();
+      img.src = event.target?.result as string;
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+
+        if (width > height) {
+          if (width > maxWidth) {
+            height = Math.round((height * maxWidth) / width);
+            width = maxWidth;
+          }
+        } else {
+          if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
+          }
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          reject(new Error("Canvas 2D context not available"));
+          return;
+        }
+
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => {
+            if (blob) {
+              resolve(blob);
+            } else {
+              reject(new Error("Compression failed"));
+            }
+          },
+          "image/jpeg",
+          quality
+        );
+      };
+      img.onerror = (err) => reject(err);
+    };
+    reader.onerror = (err) => reject(err);
+  });
+};
+
+// Automatic retry for asynchronous tasks
+async function retryUpload<T>(fn: () => Promise<T>, retries = 3, delay = 1000): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    if (retries <= 1) throw err;
+    console.warn(`Upload attempt failed. Retrying in ${delay}ms... (${retries - 1} retries left)`);
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    return retryUpload(fn, retries - 1, delay * 1.5);
+  }
+}
+
+// Uploads a blob to Firebase Storage and reports raw progress
+const uploadToStorageWithProgress = (
+  storageRef: any, 
+  blob: Blob, 
+  onProgress: (progress: number) => void
+): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const uploadTask = uploadBytesResumable(storageRef, blob);
+    uploadTask.on(
+      "state_changed",
+      (snapshot) => {
+        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
+        onProgress(progress);
+      },
+      (error) => {
+        reject(error);
+      },
+      async () => {
+        try {
+          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+          resolve(downloadURL);
+        } catch (err) {
+          reject(err);
+        }
+      }
+    );
+  });
+};
 import { 
   listCalendarEvents, 
   createCalendarEvent, 
@@ -184,8 +346,9 @@ export default function App() {
   const [userName, setUserName] = useState(() => localStorage.getItem("jx_ai_profile_name") || "");
   const [userEmail, setUserEmail] = useState(() => localStorage.getItem("jx_ai_profile_email") || "");
   const [userBio, setUserBio] = useState("");
-  const [userPhotoURL, setUserPhotoURL] = useState("");
+  const [userPhotoURL, setUserPhotoURL] = useState(() => localStorage.getItem("jx_ai_profile_photo") || "");
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [photoUploadProgress, setPhotoUploadProgress] = useState<number | null>(null);
 
   // Settings states
   const [theme, setTheme] = useState<"dark" | "light">("dark");
@@ -285,6 +448,10 @@ export default function App() {
               }
               if (profile.photoURL) {
                 setUserPhotoURL(profile.photoURL);
+                localStorage.setItem("jx_ai_profile_photo", profile.photoURL);
+              } else {
+                setUserPhotoURL("");
+                localStorage.removeItem("jx_ai_profile_photo");
               }
             }
           })
@@ -2244,45 +2411,56 @@ export default function App() {
     }
 
     setUploadingPhoto(true);
+    setPhotoUploadProgress(0);
     try {
-      // Create a unique file name/path in storage
-      const storageRef = ref(storage, `users/${currentUser.uid}/profile_photo_${Date.now()}`);
+      // 1. Compress the selected photo on the client side
+      handleShowNotification("Compressing image for lightning-fast upload...");
+      const compressedBlob = await compressImage(file, 350, 350, 0.85);
       
-      // Upload the bytes
-      const snapshot = await uploadBytes(storageRef, file);
+      // 2. Create unique reference path
+      const storageRef = ref(storage, `users/${currentUser.uid}/profile_photo_${Date.now()}.jpg`);
       
-      // Get the direct download URL
-      const downloadURL = await getDownloadURL(snapshot.ref);
+      // 3. Upload with real-time progress & up to 3 automatic retries
+      handleShowNotification("Uploading photo securely to Firebase Cloud...");
+      const downloadURL = await retryUpload(
+        () => uploadToStorageWithProgress(storageRef, compressedBlob, (p) => setPhotoUploadProgress(p)),
+        3,
+        1000
+      );
       
-      // Update our photoURL state
+      // 4. Set state, cache locally, and persist in Firestore profile
       setUserPhotoURL(downloadURL);
+      localStorage.setItem("jx_ai_profile_photo", downloadURL);
       
-      // Save it directly in the profile in Firestore!
       await saveUserProfile(currentUser.uid, {
         photoURL: downloadURL
       });
 
       handleShowNotification("Profile photo successfully uploaded and synchronized!");
     } catch (err: any) {
-      console.error("Firebase Storage Upload Error:", err);
-      // Fallback: If Firebase Storage fails or isn't enabled, read as base64 data-url and store in firestore
+      console.warn("Firebase Storage failed (retries exhausted). Using high-res compressed local fallback:", err);
+      // Fallback: Convert the already-compressed, small Blob to base64 and save to Firestore
       try {
+        const compressedBlob = await compressImage(file, 350, 350, 0.85);
         const reader = new FileReader();
         reader.onloadend = async () => {
           const base64data = reader.result as string;
           setUserPhotoURL(base64data);
+          localStorage.setItem("jx_ai_profile_photo", base64data);
+          
           await saveUserProfile(currentUser.uid, {
             photoURL: base64data
           });
-          handleShowNotification("Photo uploaded using Local Database secure storage fallback!");
+          handleShowNotification("Photo uploaded successfully using secure database fallback!");
         };
-        reader.readAsDataURL(file);
+        reader.readAsDataURL(compressedBlob);
       } catch (fallbackErr: any) {
-        console.error("Fallback upload error:", fallbackErr);
-        handleShowNotification(`Upload failed: ${err.message || err}`);
+        console.error("Critical fallback upload failure:", fallbackErr);
+        handleShowNotification(`Upload failed: ${fallbackErr.message || fallbackErr}`);
       }
     } finally {
       setUploadingPhoto(false);
+      setPhotoUploadProgress(null);
     }
   };
 
@@ -2293,6 +2471,7 @@ export default function App() {
     }
     try {
       setUserPhotoURL("");
+      localStorage.removeItem("jx_ai_profile_photo");
       await saveUserProfile(currentUser.uid, {
         photoURL: ""
       });
@@ -2344,22 +2523,7 @@ export default function App() {
       <div className={`flex flex-col items-center justify-center h-screen w-full font-sans ${bgClass}`}>
         <div className="space-y-4 text-center">
           <div className="flex items-center justify-center">
-            <img 
-              src="/favicon.png" 
-              alt="" 
-              referrerPolicy="no-referrer"
-              onError={(e) => {
-                e.currentTarget.style.display = 'none';
-                const parent = e.currentTarget.parentElement;
-                if (parent && !parent.querySelector('.logo-fallback')) {
-                  const fallback = document.createElement('div');
-                  fallback.className = 'logo-fallback w-16 h-16 mx-auto rounded-3xl bg-zinc-950 border border-zinc-800 shadow-[0_0_30px_rgba(59,130,246,0.35)] flex items-center justify-center font-extrabold text-xl text-white';
-                  fallback.innerText = 'JX';
-                  parent.appendChild(fallback);
-                }
-              }}
-              className="w-16 h-16 rounded-3xl bg-zinc-950 border border-zinc-800 shadow-[0_0_30px_rgba(59,130,246,0.35)] object-contain" 
-            />
+            <JXLogo className="w-16 h-16" roundedClass="rounded-3xl" glowClass="shadow-[0_0_30px_rgba(59,130,246,0.35)]" />
           </div>
           <div className="space-y-1 animate-pulse">
             <h1 className="text-sm font-bold tracking-tight text-zinc-300">Loading JX AI Workspace...</h1>
@@ -2385,22 +2549,7 @@ export default function App() {
           
           <div className="flex flex-col items-center text-center space-y-2">
             <div className="flex items-center justify-center">
-              <img 
-                src="/favicon.png" 
-                alt="" 
-                referrerPolicy="no-referrer"
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none';
-                  const parent = e.currentTarget.parentElement;
-                  if (parent && !parent.querySelector('.logo-fallback')) {
-                    const fallback = document.createElement('div');
-                    fallback.className = 'logo-fallback w-16 h-16 rounded-2xl bg-zinc-950 border border-zinc-800 shadow-[0_0_30px_rgba(59,130,246,0.35)] flex items-center justify-center font-extrabold text-xl text-white';
-                    fallback.innerText = 'JX';
-                    parent.appendChild(fallback);
-                  }
-                }}
-                className="w-16 h-16 rounded-2xl bg-zinc-950 border border-zinc-800 shadow-[0_0_30px_rgba(59,130,246,0.35)] animate-pulse object-contain" 
-              />
+              <JXLogo className="w-16 h-16 animate-pulse" roundedClass="rounded-2xl" glowClass="shadow-[0_0_30px_rgba(59,130,246,0.35)]" />
             </div>
             <div className="space-y-1">
               <h1 className="text-2xl font-extrabold tracking-tight text-white bg-gradient-to-r from-blue-400 via-indigo-400 to-purple-400 bg-clip-text text-transparent">
@@ -2782,22 +2931,7 @@ export default function App() {
         <div className={`p-5 flex items-center justify-between border-b ${subBorderClass}`}>
           <div className="flex items-center gap-3">
             <div className="flex items-center justify-center">
-              <img 
-                src="/favicon.png" 
-                alt="" 
-                referrerPolicy="no-referrer"
-                onError={(e) => {
-                  e.currentTarget.style.display = 'none';
-                  const parent = e.currentTarget.parentElement;
-                  if (parent && !parent.querySelector('.logo-fallback')) {
-                    const fallback = document.createElement('div');
-                    fallback.className = 'logo-fallback w-9 h-9 rounded-full bg-black border border-zinc-800 shadow-[0_0_12px_rgba(59,130,246,0.3)] flex items-center justify-center font-extrabold text-xs text-white';
-                    fallback.innerText = 'JX';
-                    parent.appendChild(fallback);
-                  }
-                }}
-                className="w-9 h-9 rounded-full bg-black border border-zinc-800 shadow-[0_0_12px_rgba(59,130,246,0.3)] object-contain" 
-              />
+              <JXLogo className="w-9 h-9" roundedClass="rounded-full" glowClass="shadow-[0_0_12px_rgba(59,130,246,0.3)]" bgClass="bg-black" />
             </div>
             <div>
               <h2 className="text-base font-bold tracking-tight text-white">JX AI</h2>
@@ -3070,18 +3204,7 @@ export default function App() {
 
           <div className="border-t border-zinc-800/40 my-3 pt-3 space-y-2">
             <div className="flex items-center gap-2.5 px-3 py-2 rounded-xl bg-zinc-950/45 border border-zinc-900">
-              {userPhotoURL ? (
-                <img 
-                  src={userPhotoURL} 
-                  alt="Avatar" 
-                  referrerPolicy="no-referrer"
-                  className="w-8 h-8 rounded-full border border-zinc-800 object-cover shrink-0"
-                />
-              ) : (
-                <div className="w-8 h-8 rounded-full bg-blue-600/10 border border-blue-500/20 text-blue-400 flex items-center justify-center font-bold text-sm uppercase shrink-0">
-                  {userName ? userName.charAt(0) : "U"}
-                </div>
-              )}
+              <UserAvatar photoUrl={userPhotoURL} name={userName} className="w-8 h-8" />
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-bold text-zinc-300 truncate leading-none">{userName || "JX User"}</p>
                 <p className="text-[10px] text-zinc-500 font-mono truncate mt-1">{userEmail}</p>
@@ -3160,22 +3283,7 @@ export default function App() {
               <div className={`p-4 flex justify-between items-center border-b ${subBorderClass}`}>
                 <div className="flex items-center gap-2">
                   <div className="flex items-center justify-center">
-                    <img 
-                      src="/favicon.png" 
-                      alt="" 
-                      referrerPolicy="no-referrer"
-                      onError={(e) => {
-                        e.currentTarget.style.display = 'none';
-                        const parent = e.currentTarget.parentElement;
-                        if (parent && !parent.querySelector('.logo-fallback')) {
-                          const fallback = document.createElement('div');
-                          fallback.className = 'logo-fallback w-8 h-8 rounded-full bg-black border border-zinc-800 shadow-[0_0_12px_rgba(59,130,246,0.3)] flex items-center justify-center font-extrabold text-xs text-white';
-                          fallback.innerText = 'JX';
-                          parent.appendChild(fallback);
-                        }
-                      }}
-                      className="w-8 h-8 rounded-full bg-black border border-zinc-800 shadow-[0_0_12px_rgba(59,130,246,0.3)] object-contain" 
-                    />
+                    <JXLogo className="w-8 h-8" roundedClass="rounded-full" glowClass="shadow-[0_0_12px_rgba(59,130,246,0.3)]" bgClass="bg-black" />
                   </div>
                   <span className="font-bold text-sm text-white">JX AI v3.5</span>
                 </div>
@@ -3425,18 +3533,7 @@ export default function App() {
 
                 <div className="border-t border-zinc-800/40 my-3 pt-3 space-y-2">
                   <div className="flex items-center gap-2 px-2.5 py-1.5 rounded-xl bg-zinc-950/45 border border-zinc-900">
-                    {userPhotoURL ? (
-                      <img 
-                        src={userPhotoURL} 
-                        alt="Avatar" 
-                        referrerPolicy="no-referrer"
-                        className="w-7 h-7 rounded-full border border-zinc-800 object-cover shrink-0"
-                      />
-                    ) : (
-                      <div className="w-7 h-7 rounded-full bg-blue-600/10 border border-blue-500/20 text-blue-400 flex items-center justify-center font-bold text-xs uppercase shrink-0">
-                        {userName ? userName.charAt(0) : "U"}
-                      </div>
-                    )}
+                    <UserAvatar photoUrl={userPhotoURL} name={userName} className="w-7 h-7" />
                     <div className="flex-1 min-w-0">
                       <p className="text-[11px] font-bold text-zinc-300 truncate leading-none">{userName || "JX User"}</p>
                       <p className="text-[9px] text-zinc-500 font-mono truncate mt-0.5">{userEmail}</p>
@@ -3585,21 +3682,10 @@ export default function App() {
             {/* Header User Profile Avatar Shortcut */}
             <button 
               onClick={() => setActiveTab("profile")}
-              className="relative cursor-pointer group flex items-center justify-center shrink-0 ml-1 rounded-full focus:outline-none focus:ring-1 focus:ring-zinc-700"
+              className="relative cursor-pointer group flex items-center justify-center shrink-0 ml-1 rounded-full focus:outline-none focus:ring-1 focus:ring-zinc-700 hover:scale-105 transition-all"
               title="View Profile"
             >
-              {userPhotoURL ? (
-                <img 
-                  src={userPhotoURL} 
-                  alt="Avatar" 
-                  referrerPolicy="no-referrer"
-                  className="w-7 h-7 rounded-full border border-zinc-800 object-cover hover:border-zinc-500 transition-all shadow-md group-hover:scale-105"
-                />
-              ) : (
-                <div className="w-7 h-7 rounded-full bg-zinc-950 border border-zinc-800 hover:border-zinc-500 flex items-center justify-center font-bold text-xs text-white shrink-0 shadow-md group-hover:scale-105 transition-all">
-                  {userName.charAt(0) || "P"}
-                </div>
-              )}
+              <UserAvatar photoUrl={userPhotoURL} name={userName} className="w-7 h-7 hover:border-zinc-500 transition-all shadow-md" />
             </button>
           </div>
         </header>
@@ -3653,13 +3739,7 @@ export default function App() {
                   {/* Brand Visual Intro */}
                   <div className="text-center space-y-3.5">
                     <div className="flex items-center justify-center mb-1">
-                      <img 
-                        src="/favicon.png" 
-                        alt="" 
-                        referrerPolicy="no-referrer"
-                        onError={(e) => { e.currentTarget.src = JX_FALLBACK_SVG; }}
-                        className="w-14 h-14 rounded-full bg-black border border-zinc-800 shadow-[0_0_15px_rgba(255,255,255,0.15)] object-contain" 
-                      />
+                      <JXLogo className="w-14 h-14" roundedClass="rounded-2xl" glowClass="shadow-[0_0_25px_rgba(59,130,246,0.25)]" bgClass="bg-zinc-950" />
                     </div>
                     <h2 className="text-2xl md:text-3xl font-black text-white tracking-tight animate-fade-in">
                       Hello! I'm JX AI. How can I help you today?
@@ -3718,9 +3798,7 @@ export default function App() {
                     >
                       {/* Avatar Indicator - Left */}
                       {!isUser && (
-                        <div className="w-8 h-8 md:w-9 md:h-9 rounded-full bg-black border border-zinc-800 text-white font-extrabold text-sm flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(255,255,255,0.15)]">
-                          U
-                        </div>
+                        <JXLogo className="w-8 h-8 md:w-9 md:h-9" roundedClass="rounded-full" glowClass="shadow-[0_0_8px_rgba(255,255,255,0.15)]" bgClass="bg-black" />
                       )}
 
                       {/* Chat Bubble Body */}
@@ -3894,18 +3972,7 @@ export default function App() {
 
                       {/* Avatar Indicator - Right */}
                       {isUser && (
-                        userPhotoURL ? (
-                          <img 
-                            src={userPhotoURL} 
-                            alt="User Avatar" 
-                            referrerPolicy="no-referrer"
-                            className="w-8 h-8 md:w-9 md:h-9 rounded-full object-cover shrink-0 border border-zinc-700"
-                          />
-                        ) : (
-                          <div className="w-8 h-8 md:w-9 md:h-9 rounded-full bg-zinc-800 text-zinc-300 font-bold text-xs flex items-center justify-center shrink-0 border border-zinc-700">
-                            {userName.charAt(0) || "Y"}
-                          </div>
-                        )
+                        <UserAvatar photoUrl={userPhotoURL} name={userName} className="w-8 h-8 md:w-9 md:h-9" />
                       )}
 
                     </div>
@@ -3915,9 +3982,7 @@ export default function App() {
                 {/* Generating Loading States */}
                 {loading && (messages.length === 0 || messages[messages.length - 1].role !== "model") && (
                   <div className="flex gap-3 md:gap-4 justify-start">
-                    <div className="w-8 h-8 md:w-9 md:h-9 rounded-full bg-black border border-zinc-800 text-white font-extrabold text-sm flex items-center justify-center shrink-0 shadow-[0_0_8px_rgba(255,255,255,0.15)]">
-                      J
-                    </div>
+                    <JXLogo className="w-8 h-8 md:w-9 md:h-9" roundedClass="rounded-full" glowClass="shadow-[0_0_8px_rgba(255,255,255,0.15)]" bgClass="bg-black" />
                     <div className={`rounded-2xl rounded-tl-none border px-5 py-4 shadow-sm space-y-2.5 ${bubbleModelClass}`}>
                       <div className="flex items-center gap-1.5 text-xs text-zinc-400 font-semibold italic">
                         <Sparkles className="w-3.5 h-3.5 text-zinc-400 animate-spin" />
@@ -4436,18 +4501,7 @@ export default function App() {
               
               <div className="flex flex-col md:flex-row items-center gap-6 border-b pb-6 mb-6 border-zinc-800/40">
                 <div className="relative group">
-                  {userPhotoURL ? (
-                    <img 
-                      src={userPhotoURL} 
-                      alt="Profile Avatar" 
-                      referrerPolicy="no-referrer"
-                      className="w-20 h-20 rounded-full border border-zinc-800 object-cover shadow-[0_0_15px_rgba(59,130,246,0.25)]"
-                    />
-                  ) : (
-                    <div className="w-20 h-20 rounded-full bg-black border border-zinc-800 flex items-center justify-center font-bold text-3xl text-white shadow-[0_0_15px_rgba(255,255,255,0.15)] shrink-0">
-                      {userName.charAt(0) || "P"}
-                    </div>
-                  )}
+                  <UserAvatar photoUrl={userPhotoURL} name={userName} className="w-20 h-20 shadow-[0_0_15px_rgba(59,130,246,0.25)]" />
                   <label className="absolute inset-0 flex items-center justify-center rounded-full bg-black/60 opacity-0 group-hover:opacity-100 transition-all cursor-pointer">
                     <span className="text-[10px] text-white font-bold uppercase tracking-wider">Change</span>
                     <input 
@@ -4458,8 +4512,11 @@ export default function App() {
                     />
                   </label>
                   {uploadingPhoto && (
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/75 rounded-full">
-                      <div className="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/75 rounded-full flex-col">
+                      <div className="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mb-1" />
+                      {photoUploadProgress !== null && (
+                        <span className="text-[9px] text-emerald-400 font-mono font-bold">{Math.round(photoUploadProgress)}%</span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -4546,7 +4603,14 @@ export default function App() {
                     )}
                     
                     <label className="px-4 py-2.5 rounded-xl bg-zinc-900 border border-zinc-800 text-zinc-300 hover:text-white hover:bg-zinc-800 text-xs font-bold transition-all cursor-pointer active:scale-95 flex items-center gap-1.5 shadow-sm">
-                      {uploadingPhoto ? "Uploading..." : "Upload Photo"}
+                      {uploadingPhoto ? (
+                        <>
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-400 shrink-0" />
+                          <span>Uploading ({photoUploadProgress !== null ? `${Math.round(photoUploadProgress)}%` : "..."})</span>
+                        </>
+                      ) : (
+                        "Upload Photo"
+                      )}
                       <input 
                         type="file" 
                         accept="image/*" 
