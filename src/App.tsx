@@ -207,44 +207,63 @@ const compressImage = (file: File, maxWidth = 350, maxHeight = 350, quality = 0.
   });
 };
 
-// Automatic retry for asynchronous tasks
+// Automatic retry for asynchronous tasks (fails fast on fatal error codes like unauthorized)
 async function retryUpload<T>(fn: () => Promise<T>, retries = 3, delay = 1000): Promise<T> {
   try {
     return await fn();
-  } catch (err) {
-    if (retries <= 1) throw err;
-    console.warn(`Upload attempt failed. Retrying in ${delay}ms... (${retries - 1} retries left)`);
+  } catch (err: any) {
+    const errorCode = err?.code || "";
+    const fatalErrorCodes = [
+      "storage/unauthorized",
+      "storage/unauthenticated",
+      "storage/project-not-found",
+      "storage/bucket-not-found",
+      "storage/invalid-argument",
+      "storage/object-not-found"
+    ];
+    if (retries <= 1 || fatalErrorCodes.includes(errorCode)) {
+      throw err;
+    }
+    console.warn(`Upload attempt failed with code: ${errorCode}. Retrying in ${delay}ms... (${retries - 1} retries left)`);
     await new Promise((resolve) => setTimeout(resolve, delay));
     return retryUpload(fn, retries - 1, delay * 1.5);
   }
 }
 
-// Uploads a blob to Firebase Storage and reports raw progress
+// Uploads a blob to Firebase Storage and reports raw progress safely
 const uploadToStorageWithProgress = (
   storageRef: any, 
   blob: Blob, 
   onProgress: (progress: number) => void
 ): Promise<string> => {
   return new Promise((resolve, reject) => {
-    const uploadTask = uploadBytesResumable(storageRef, blob);
-    uploadTask.on(
-      "state_changed",
-      (snapshot) => {
-        const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-        onProgress(progress);
-      },
-      (error) => {
-        reject(error);
-      },
-      async () => {
-        try {
-          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          resolve(downloadURL);
-        } catch (err) {
-          reject(err);
+    try {
+      const uploadTask = uploadBytesResumable(storageRef, blob);
+      uploadTask.on(
+        "state_changed",
+        (snapshot) => {
+          const progress = snapshot.totalBytes > 0
+            ? (snapshot.bytesTransferred / snapshot.totalBytes) * 100
+            : 0;
+          onProgress(progress);
+        },
+        (error) => {
+          console.error("uploadTask state_changed error:", error);
+          reject(error);
+        },
+        async () => {
+          try {
+            const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
+            resolve(downloadURL);
+          } catch (err) {
+            reject(err);
+          }
         }
-      }
-    );
+      );
+    } catch (err) {
+      console.error("uploadBytesResumable synchronous error:", err);
+      reject(err);
+    }
   });
 };
 import { 
@@ -2437,30 +2456,47 @@ export default function App() {
       });
 
       handleShowNotification("Profile photo successfully uploaded and synchronized!");
+      setUploadingPhoto(false);
+      setPhotoUploadProgress(null);
     } catch (err: any) {
-      console.warn("Firebase Storage failed (retries exhausted). Using high-res compressed local fallback:", err);
+      console.error("Firebase Storage upload failed:", err);
+      const exactErrorMessage = err?.message || err?.code || String(err);
+      handleShowNotification(`Storage Upload Failed: ${exactErrorMessage}`);
+      
       // Fallback: Convert the already-compressed, small Blob to base64 and save to Firestore
       try {
         const compressedBlob = await compressImage(file, 350, 350, 0.85);
         const reader = new FileReader();
         reader.onloadend = async () => {
-          const base64data = reader.result as string;
-          setUserPhotoURL(base64data);
-          localStorage.setItem("jx_ai_profile_photo", base64data);
-          
-          await saveUserProfile(currentUser.uid, {
-            photoURL: base64data
-          });
-          handleShowNotification("Photo uploaded successfully using secure database fallback!");
+          try {
+            const base64data = reader.result as string;
+            setUserPhotoURL(base64data);
+            localStorage.setItem("jx_ai_profile_photo", base64data);
+            
+            await saveUserProfile(currentUser.uid, {
+              photoURL: base64data
+            });
+            handleShowNotification(`Stored via secure fallback. Storage error: ${exactErrorMessage}`);
+          } catch (fallbackErr: any) {
+            console.error("Critical fallback upload failure:", fallbackErr);
+            handleShowNotification(`Database fallback failed: ${fallbackErr.message || fallbackErr}`);
+          } finally {
+            setUploadingPhoto(false);
+            setPhotoUploadProgress(null);
+          }
+        };
+        reader.onerror = () => {
+          handleShowNotification(`Upload failed: ${exactErrorMessage}`);
+          setUploadingPhoto(false);
+          setPhotoUploadProgress(null);
         };
         reader.readAsDataURL(compressedBlob);
       } catch (fallbackErr: any) {
-        console.error("Critical fallback upload failure:", fallbackErr);
-        handleShowNotification(`Upload failed: ${fallbackErr.message || fallbackErr}`);
+        console.error("Critical fallback initialization failure:", fallbackErr);
+        handleShowNotification(`Upload failed: ${exactErrorMessage}`);
+        setUploadingPhoto(false);
+        setPhotoUploadProgress(null);
       }
-    } finally {
-      setUploadingPhoto(false);
-      setPhotoUploadProgress(null);
     }
   };
 

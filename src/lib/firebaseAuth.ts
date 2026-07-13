@@ -23,7 +23,20 @@ import firebaseConfig from "../../firebase-applet-config.json";
 const app = getApps().length === 0 ? initializeApp(firebaseConfig) : getApp();
 export const auth = getAuth(app);
 export const db = getFirestore(app);
-export const storage = getStorage(app);
+
+// Initialize Firebase Storage explicitly with proper bucket URL and fallbacks
+const getStorageBucketUrl = (): string => {
+  let bucket = firebaseConfig.storageBucket;
+  if (!bucket && firebaseConfig.projectId) {
+    bucket = `${firebaseConfig.projectId}.firebasestorage.app`;
+  }
+  if (bucket && !bucket.startsWith("gs://")) {
+    return `gs://${bucket}`;
+  }
+  return bucket || "";
+};
+
+export const storage = getStorage(app, getStorageBucketUrl() || undefined);
 
 export const provider = new GoogleAuthProvider();
 
