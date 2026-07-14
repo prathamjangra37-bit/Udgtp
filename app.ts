@@ -9,7 +9,7 @@ import {
   saveWhatsAppConversation, 
   sendWhatsAppTextMessage, 
   formatTextForWhatsApp 
-} from "./src/lib/whatsappService";
+} from "./src/lib/whatsappService.js";
 
 dotenv.config();
 
