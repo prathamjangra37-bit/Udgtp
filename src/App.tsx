@@ -88,6 +88,31 @@ import {
   saveUserProfile
 } from "./lib/firestoreService";
 
+const getLocalTimeInfo = () => {
+  try {
+    const now = new Date();
+    const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "unknown";
+    const dayName = now.toLocaleDateString("en-US", { weekday: "long" });
+    const monthName = now.toLocaleDateString("en-US", { month: "long" });
+    const dateNum = now.getDate();
+    const yearNum = now.getFullYear();
+    const timeStr = now.toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+    const fullDateStr = now.toLocaleDateString("en-US", { weekday: "long", year: "numeric", month: "long", day: "numeric" });
+    
+    return {
+      timezone,
+      day: dayName,
+      month: monthName,
+      date: dateNum,
+      year: yearNum,
+      time: timeStr,
+      fullDate: fullDateStr
+    };
+  } catch (err) {
+    return null;
+  }
+};
+
 // Helper components for Avatars with robust built-in fallbacks
 const JXLogo = ({ 
   className = "w-8 h-8", 
@@ -1974,7 +1999,7 @@ export default function App() {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: payload }),
+          body: JSON.stringify({ messages: payload, localTimeInfo: getLocalTimeInfo() }),
           signal: controller.signal
         });
 
@@ -2228,7 +2253,7 @@ export default function App() {
         const res = await fetch("/api/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ messages: payload }),
+          body: JSON.stringify({ messages: payload, localTimeInfo: getLocalTimeInfo() }),
           signal: controller.signal
         });
 
